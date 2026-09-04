@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>正文修订 · 集成测试</title><link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css"><link rel="stylesheet" href="/style.css"><style>body{font:16px/1.8 system-ui;background:#dfdbd4;color:#303234;margin:0;padding:18px}main{max-width:600px;margin:60px auto}button{padding:10px;margin:4px}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f9f6f0;padding:16px}label{display:block}#demo-info{font-size:12px}</style></head><body>
+<main><h1>正文修订 · 测试聊天</h1><p id="demo-info">本地模拟酒馆接口，不连接模型。可测试保存、刷新、上下文和手机操作。</p><button id="demo-generate">模拟回复完成</button><button id="demo-next">查看下次请求的上下文</button><button id="demo-reset">重置测试聊天</button><label><input type="checkbox" id="demo-fail">模拟保存失败</label><pre id="demo-body"></pre><pre id="demo-context" hidden></pre><div id="extensions_settings2"></div></main>
+<script type="module">
+const initial='你拖着极其疲惫的身体，走进了旅店。\n\n壁炉旁的空位极具吸引力。\n\n他极度不安，声音也变得极其僵硬。\n\n悲伤像洪水一样把他淹没了。\n\n他像已经看透生死的孤狼一样。\n\n他的思绪像断了线的风筝一样。\n\n她的回答极其简短，随后便转身走开。';
+const saved=JSON.parse(localStorage.getItem('tr-demo')||'null');
+const listeners=new Map();
+const events=Object.fromEntries(['GENERATION_STARTED','GENERATION_ENDED','GENERATION_STOPPED','CHARACTER_MESSAGE_RENDERED','MESSAGE_EDITED','MESSAGE_UPDATED','MESSAGE_SWIPED','MESSAGE_DELETED','CHAT_CHANGED'].map(x=>[x,x]));
+const ctx={chatId:'demo',characterId:0,groupId:null,characters:[{name:'测试角色',avatar:'demo.png'}],chat:saved?.chat??[{name:'测试角色',is_user:false,mes:initial,swipe_id:0,swipes:[initial],extra:{}}],chatMetadata:saved?.metadata??{},extensionSettings:saved?.settings??{},eventTypes:events,eventSource:{on(type,fn){if(!listeners.has(type))listeners.set(type,[]);listeners.get(type).push(fn)},async emit(type,...args){for(const fn of listeners.get(type)??[])await fn(...args)}},getRequestHeaders:()=>({'Content-Type':'application/json'}),updateMessageBlock(){document.getElementById('demo-body').textContent=ctx.chat[0].mes},async saveChat(){if(document.getElementById('demo-fail').checked)return;localStorage.setItem('tr-demo',JSON.stringify({chat:ctx.chat,metadata:ctx.chatMetadata,settings:ctx.extensionSettings}))},saveSettingsDebounced(){ctx.saveChat()}};
+const nativeFetch=window.fetch;
+window.fetch=async(url,options)=>{if(url==='/api/chats/get'||url==='/api/chats/group/get'){const disk=JSON.parse(localStorage.getItem('tr-demo')||'null');return new Response(JSON.stringify([{chat_metadata:disk?.metadata},...(disk?.chat??[])]),{headers:{'Content-Type':'application/json'}})}return nativeFetch(url,options)};
+window.SillyTavern={getContext:()=>ctx};
+await import('/index.js');ctx.updateMessageBlock();
+document.getElementById('demo-generate').onclick=async()=>{await ctx.eventSource.emit(events.GENERATION_STARTED);await ctx.eventSource.emit(events.CHARACTER_MESSAGE_RENDERED,0);await ctx.eventSource.emit(events.GENERATION_ENDED)};
+document.getElementById('demo-next').onclick=()=>{const box=document.getElementById('demo-context');box.hidden=false;box.textContent=JSON.stringify(ctx.chat.map(m=>({role:m.is_user?'user':'assistant',content:m.mes})),null,2)};
+document.getElementById('demo-reset').onclick=()=>{localStorage.removeItem('tr-demo');location.reload()};
+</script></body></html>
