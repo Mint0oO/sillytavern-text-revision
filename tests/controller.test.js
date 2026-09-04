@@ -42,10 +42,27 @@ test('round counts survive apply/rescan; auto events deduplicate and old rounds 
   assert.equal(first.count, 2); assert.equal(second.count, 0); assert.equal(second.number, 2);
   assert.equal(f.ctl.editable(first), false);
   assert.equal(f.ctx.chatMetadata[KEY].rounds.length, 2);
+  // Returning to an already-detected swipe selects that result without another round.
+  const m = f.ctx.chat[0]; m.swipe_id = 0; m.mes = m.swipes[0];
+  await f.ctl.detect(0, { auto: true });
+  m.swipe_id = 1; m.mes = m.swipes[1];
+  assert.equal(await f.ctl.detect(0, { auto: true }), null);
+  assert.equal(f.ctl.current().id, second.id); assert.equal(f.ctl.history().length, 3);
 });
-test('in-flight generation cannot scan or apply', async () => {
-  const f = fixture(); const r = await f.ctl.detect(); f.ctl.generating = true;
-  await assert.rejects(f.ctl.detect(), /输出结束/); await assert.rejects(f.ctl.commit(r), /输出结束/);
+test('a stale host streaming processor cannot lock completed text; changed source still prevents applying', async () => {
+  const f = fixture(); f.ctx.streamingProcessor = { isFinished: false, isStopped: false };
+  const r = await f.ctl.detect();
+  await f.ctl.commit(r); assert.equal(f.ctx.chat[0].mes.includes('极其'), false);
+  f.ctx.chat[0].mes += '新内容';
+  await assert.rejects(f.ctl.commit(r), /过期/);
+});
+
+test('old tag settings migrate into editable exclusion pairs without changing their meaning', () => {
+  const f = fixture();
+  f.ctx.extensionSettings[KEY] = { extractTags: ['content'], excludeTags: ['status', 'think'], autoScan: false };
+  const s = f.ctl.settings();
+  assert.deepEqual(s.excludeRules, [{ start: '<status>', end: '</status>' }, { start: '<think>', end: '</think>' }]);
+  assert.equal(s.showLauncher, false); assert.equal(s.autoScan, false);
 });
 test('changing extraction scope invalidates earlier suggestions and permits a fresh automatic scan', async () => {
   const f = fixture(); const r = await f.ctl.detect();

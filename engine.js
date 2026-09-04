@@ -44,19 +44,31 @@ function compile(rule) {
 }
 
 export const DEFAULT_EXCLUDE_TAGS = ['think', 'thinking', 'reasoning', 'script', 'style'];
-export function normalizeScope({ extractTags = [], excludeTags = DEFAULT_EXCLUDE_TAGS } = {}) {
+export function normalizeScope({ extractTags = [], excludeTags = DEFAULT_EXCLUDE_TAGS, extractEnabled = true, excludeEnabled = true, excludeRules, excludeRanges = [] } = {}) {
   const names = value => {
     const input = Array.isArray(value) ? value.join('\n') : String(value ?? '');
     if (input.length > 5000) throw new Error('标签设置过长，请减少标签数量。');
-    const list = input.split(/[\s,，]+/).map(s => s.trim()).filter(Boolean).map(s => {
-      const match = s.match(/^(?:<\/?([\p{L}_][\p{L}\p{N}_.:-]*)\/?\s*>|([\p{L}_][\p{L}\p{N}_.:-]*))$/u);
+    const list = input.split(/[\r\n,，]+/).map(s => s.trim()).filter(Boolean).map(s => {
+      const match = s.match(/^(?:<\/?([\p{L}_][\p{L}\p{N}_.: -]*?)\/?\s*>|([\p{L}_][\p{L}\p{N}_.: -]*))$/u);
       if (!match || s.length > 80) throw new Error('请填写标签名，例如 content 或 <content>，每行一个，不填写属性。');
-      return (match[1] ?? match[2]).toLowerCase();
+      return (match[1] ?? match[2]).trim().toLowerCase();
     });
     if (list.length > 50) throw new Error('提取和排除标签各最多填写 50 个。');
     return [...new Set(list)].sort();
   };
-  return { extractTags: names(extractTags), excludeTags: names(excludeTags) };
+  let tags = names(excludeTags), ranges = [];
+  const pairs = excludeRules ?? excludeRanges;
+  if (!Array.isArray(pairs) || pairs.length > 50) throw new Error('内容排除最多设置 50 条。');
+  if (excludeRules !== undefined) tags = [];
+  for (const pair of pairs) {
+    const start = String(pair.start ?? ''), end = String(pair.end ?? '');
+    if (!start.trim() || !end.trim() || start.length > 256 || end.length > 256) throw new Error('每条排除规则都需要开始和结束文字，各不超过 256 字。');
+    const tag = start.match(/^<([\p{L}_][\p{L}\p{N}_.: -]*)>$/u);
+    if (tag && end.toLowerCase() === `</${tag[1].toLowerCase()}>`) tags.push(tag[1].toLowerCase());
+    else ranges.push({ start, end });
+  }
+  ranges = [...new Map(ranges.map(pair => [JSON.stringify(pair), pair])).values()].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b)));
+  return { extractTags: extractEnabled ? names(extractTags) : [], excludeTags: excludeEnabled ? names(tags) : [], excludeRanges: excludeEnabled ? ranges : [] };
 }
 export const scopeKey = scope => JSON.stringify(normalizeScope(scope));
 
@@ -79,9 +91,32 @@ function mergeRanges(ranges) {
 }
 
 export function textRanges(text, config) {
-  const scope = normalizeScope(config), ignored = mergeRanges(protectedRanges(text));
+  const scope = normalizeScope(config), protectedSpans = mergeRanges(protectedRanges(text));
+  const literalSpans = [];
+  for (const pair of scope.excludeRanges) {
+    let cursor = 0, start;
+    while ((start = text.indexOf(pair.start, cursor)) !== -1) {
+      const protectedSpan = protectedSpans.find(([a, b]) => a <= start && start < b);
+      if (protectedSpan) { cursor = protectedSpan[1]; continue; }
+      let end = text.indexOf(pair.end, start + pair.start.length);
+      if (end < 0) throw new Error(`内容排除未找到结束文字：${pair.end}`);
+      // Nested literal delimiters are paired from the inside out.
+      if (pair.start !== pair.end) {
+        let next = start + pair.start.length;
+        while ((next = text.indexOf(pair.start, next)) !== -1 && next < end) {
+          end = text.indexOf(pair.end, end + pair.end.length);
+          if (end < 0) throw new Error(`内容排除未找到结束文字：${pair.end}`);
+          next += pair.start.length;
+        }
+      }
+      cursor = end + pair.end.length;
+      literalSpans.push([start, cursor]);
+    }
+  }
+  const ignored = mergeRanges([...protectedSpans, ...literalSpans]);
   const extract = new Set(scope.extractTags), exclude = new Set(scope.excludeTags);
   const tracked = new Set([...extract, ...exclude]);
+  const compoundNames = [...tracked].filter(name => name.includes(' ')).sort((a, b) => b.length - a.length).map(name => ({ name, pattern: new RegExp(`^<\\/?${escapeRE(name)}(?=[\\s/>])`, 'iu') }));
   const tags = [], included = [], excluded = [], stack = [];
   const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
   // Tokenize offsets only. Never parse/re-serialize HTML, which changes source formatting.
@@ -89,7 +124,7 @@ export function textRanges(text, config) {
   let matchedExtraction = false, tokenCount = 0, ignoredIndex = 0;
   for (const m of text.matchAll(tokens)) {
     if (++tokenCount > 10000) throw new Error('标签过多，请缩短本条回复后重试。');
-    const start = m.index, end = start + m[0].length, name = m[2].toLowerCase();
+    const start = m.index, end = start + m[0].length, name = compoundNames.find(({ pattern }) => pattern.test(m[0]))?.name ?? m[2].toLowerCase();
     while (ignored[ignoredIndex]?.[1] <= start) ignoredIndex++;
     if (ignored[ignoredIndex] && ignored[ignoredIndex][0] <= start) continue;
     tags.push([start, end]);

@@ -11,7 +11,6 @@ export class RevisionController {
     this.context = getContext;
     this.verifySave = verifySave;
     this.busy = false;
-    this.generating = false;
     this.onChange = () => {};
     this.selectedId = null;
   }
@@ -24,8 +23,12 @@ export class RevisionController {
     s.palette ??= 'soft';
     s.transparency ??= 0;
     s.autoScan ??= true;
+    s.showLauncher ??= false;
     s.extractTags ??= [];
     s.excludeTags ??= clone(DEFAULT_EXCLUDE_TAGS);
+    s.extractEnabled ??= true;
+    s.excludeEnabled ??= true;
+    s.excludeRules ??= s.excludeTags.map(name => ({ start: `<${name}>`, end: `</${name}>` }));
     return s;
   }
   history() { return this.context().chatMetadata?.[KEY]?.rounds ?? []; }
@@ -33,8 +36,6 @@ export class RevisionController {
   latestReply() { return this.context().chat.findLastIndex(isReply); }
   assertIdle() {
     if (this.busy) throw new Error('正在保存，请稍候。');
-    const p = this.context().streamingProcessor;
-    if (this.generating || p && !p.isFinished && !p.isStopped) throw new Error('请等本轮回复输出结束后再修改。');
   }
   target(round, expected = round?.expected) {
     const c = this.context();
@@ -57,7 +58,10 @@ export class RevisionController {
     const history = this.history();
     const scope = normalizeScope(this.settings());
     const previous = history.findLast(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m));
-    if (auto && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) return null;
+    if (auto && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) {
+      if (this.selectedId !== previous.id) { this.selectedId = previous.id; this.onChange(); }
+      return null;
+    }
     const round = scan(m.mes, this.settings().rules, { scope });
     m.extra ??= {};
     m.extra[KEY] ??= { id: newId() };

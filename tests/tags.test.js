@@ -48,7 +48,7 @@ test('self-closing tags and inline markup remain outside matches and manual edit
   assert.equal(r.expected, '<content>疲惫。<status/><br/>不安。<b>简短。</b></content>');
 });
 test('configured tags normalize names, wrappers and duplicates but reject attributes', () => {
-  assert.deepEqual(normalizeScope({ extractTags: 'content\n<CONTENT>\n</content>', excludeTags: 'status，options' }), { extractTags: ['content'], excludeTags: ['options', 'status'] });
+  assert.deepEqual(normalizeScope({ extractTags: 'content\n<CONTENT>\n</content>', excludeTags: 'status，options' }), { extractTags: ['content'], excludeTags: ['options', 'status'], excludeRanges: [] });
   assert.throws(() => normalizeScope({ extractTags: '<content id="x">' }), /标签名/);
 });
 test('sentence templates cannot match across excluded sections or markup', () => {
@@ -61,4 +61,38 @@ test('tag examples inside excluded blocks are opaque and cannot open extraction 
   const r = run('<script>const s="<content>极其疲惫。";</script><content>极其疲惫。</content>', { extractTags: ['content'], excludeTags: ['script'] });
   assert.equal(r.count, 1); applySelected(r);
   assert.equal(r.expected, '<script>const s="<content>极其疲惫。";</script><content>疲惫。</content>');
+});
+
+test('literal start/end exclusions and tag pairs protect their exact source, including manual edits', () => {
+  const text = '<content>极其疲惫。image###极其明亮 <fake>###极度不安。<status x="1">极其紧张。</status>极其简短。</content>';
+  const r = run(text, { extractTags: ['content'], excludeRules: [{ start: 'image###', end: '###' }, { start: '<status>', end: '</status>' }] });
+  assert.equal(r.count, 3);
+  Object.assign(r.groups[0], { manual: true, draft: '他睡着了。' });
+  applySelected(r);
+  assert.equal(r.expected, '<content>他睡着了。image###极其明亮 <fake>###不安。<status x="1">极其紧张。</status>简短。</content>');
+});
+
+test('literal exclusions support repeated and nested blocks, equal delimiters, and reject missing endings', () => {
+  const pairs = [{ start: 'BEGIN', end: 'END' }, { start: '###', end: '###' }];
+  const r = run('BEGIN极其 BEGIN极其END 极其END 极其疲惫。BEGIN极其END ###极其###', { excludeRules: pairs });
+  assert.equal(r.count, 1);
+  assert.throws(() => run('极其疲惫。BEGIN极其不安。', { excludeRules: pairs }), /结束文字/);
+  assert.throws(() => normalizeScope({ excludeRules: [{ start: 'BEGIN', end: '' }] }), /开始和结束/);
+  assert.equal(run('`BEGIN` 极其疲惫。', { excludeRules: pairs }).count, 1);
+});
+
+test('extraction and exclusion switches change only the active scope; normalized scope is stable', () => {
+  const config = { extractTags: ['content'], excludeRules: [{ start: '<status>', end: '</status>' }, { start: 'image###', end: '###' }], extractEnabled: false };
+  const text = '极其疲惫。<status>极其紧张。</status>image###极其###';
+  assert.equal(run(text, config).count, 1);
+  assert.equal(run(text, { ...config, excludeEnabled: false }).count, 3);
+  assert.equal(run(text, { ...config, extractEnabled: true }).count, 0);
+  assert.deepEqual(normalizeScope(normalizeScope(config)), normalizeScope(config));
+});
+
+test('comma-separated custom tag names can contain spaces as in Time-Space Module', () => {
+  const text = '<Time-Space Module>极其疲惫。<内部 状态>极其不安。</内部 状态></Time-Space Module><content>极其简短。</content>';
+  const r = run(text, { extractTags: 'content,Time-Space Module', excludeRules: [{ start: '<内部 状态>', end: '</内部 状态>' }] });
+  assert.equal(r.count, 2); applySelected(r);
+  assert.equal(r.expected, '<Time-Space Module>疲惫。<内部 状态>极其不安。</内部 状态></Time-Space Module><content>简短。</content>');
 });

@@ -12,6 +12,7 @@ export class RevisionUI {
     this.drafts = new Map();
     this.ruleId = null;
     this.historical = null;
+    this.scopeDraft = null;
     this.returnFocus = null;
     this.dialog = document.createElement('dialog');
     this.dialog.id = 'tr-root';
@@ -30,17 +31,19 @@ export class RevisionUI {
     this.dialog.addEventListener('change', e => this.run(() => this.change(e)));
     this.dialog.addEventListener('submit', e => { e.preventDefault(); this.run(() => this.submit(e)); });
     this.dialog.addEventListener('close', () => {
+      this.scopeDraft = null;
       document.documentElement.style.overflow = this.scrollLock?.html ?? '';
       document.body.style.overflow = this.scrollLock?.body ?? '';
       this.returnFocus?.focus?.();
     });
-    this.c.onChange = () => { if (this.edit && this.edit.roundId !== this.c.current()?.id) this.edit = null; this.badge(); if (this.dialog.open) this.render(); };
+    this.c.onChange = () => { if (this.edit && this.edit.roundId !== this.c.current()?.id) this.edit = null; this.badge(); if (this.dialog.open && !['rule', 'extract', 'exclude'].includes(this.screen)) this.render(); };
     this.viewport = () => {
       this.dialog.style.setProperty('--tr-height', `${window.visualViewport?.height ?? window.innerHeight}px`);
       this.dialog.style.setProperty('--tr-top', `${window.visualViewport?.offsetTop ?? 0}px`);
     };
     window.visualViewport?.addEventListener('resize', this.viewport);
     this.viewport();
+    this.theme();
     this.badge();
   }
   async run(action) { try { await action(); } catch (error) { this.say(error.message, true); } }
@@ -48,8 +51,10 @@ export class RevisionUI {
     const el = this.dialog.querySelector('.tr-status');
     el.textContent = text;
     el.classList.toggle('tr-error', error);
+    if (error && !this.dialog.open) globalThis.toastr?.warning(text, '词句修订');
   }
   badge() {
+    this.launcher.hidden = !this.c.settings().showLauncher;
     const round = this.c.current();
     const count = round ? round.count - processed(round) : 0;
     const badge = this.launcher.querySelector('small');
@@ -72,6 +77,12 @@ export class RevisionUI {
     if (messageId !== undefined || !this.c.current()) await this.run(() => this.c.detect(messageId));
     this.render();
   }
+  async openDetected(round) {
+    // Do not replace text the user is actively typing in another settings page.
+    if (this.dialog.open && this.screen !== 'review') return;
+    this.c.selectedId = round.id;
+    await this.open();
+  }
   resetChat() { this.edit = null; this.drafts.clear(); this.historical = null; this.c.selectedId = null; this.screen = 'review'; this.c.onChange(); }
   theme() {
     const s = this.c.settings();
@@ -84,11 +95,12 @@ export class RevisionUI {
   render() {
     const scroll = this.dialog.querySelector('.tr-main').scrollTop;
     this.theme();
-    const title = { review: '词句修订', rules: '规则', rule: this.ruleId ? '编辑规则' : '新建规则', settings: '设置', history: '检测记录', snapshot: '检测详情' }[this.screen];
-    const nav = this.screen === 'review' ? button('规则', 'data-screen="rules"') + button('记录', 'data-screen="history"') + button('设置', 'data-screen="settings"') : button(this.screen === 'rule' ? '‹ 规则' : this.screen === 'snapshot' ? '‹ 记录' : '‹ 修订', `data-screen="${this.screen === 'rule' ? 'rules' : this.screen === 'snapshot' ? 'history' : 'review'}"`);
+    const title = { review: '词句修订', rules: '规则', rule: this.ruleId ? '编辑规则' : '新建规则', settings: '设置', extract: '标签提取', exclude: '内容排除', history: '检测记录', snapshot: '检测详情' }[this.screen];
+    const parent = this.screen === 'rule' ? ['rules', '规则'] : this.screen === 'snapshot' ? ['history', '记录'] : ['extract', 'exclude'].includes(this.screen) ? ['settings', '设置'] : ['review', '修订'];
+    const nav = this.screen === 'review' ? button('规则', 'data-screen="rules"') + button('记录', 'data-screen="history"') + button('设置', 'data-screen="settings"') : button(`‹ ${parent[1]}`, `data-screen="${parent[0]}"`);
     this.dialog.querySelector('.tr-head').innerHTML = `<h2>${title}</h2><nav>${nav}${icon('xmark', '关闭修订面板', 'data-action="close"')}</nav>`;
     this.dialog.querySelector('.tr-foot').innerHTML = '';
-    const draw = { review: 'review', snapshot: 'review', rules: 'rulesView', rule: 'ruleView', settings: 'settingsView', history: 'historyView' }[this.screen];
+    const draw = { review: 'review', snapshot: 'review', rules: 'rulesView', rule: 'ruleView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
     this[draw]();
     if (this.c.busy) this.dialog.querySelectorAll('button:not([data-action="close"]), input, select, textarea').forEach(el => { el.disabled = true; });
     this.dialog.querySelector('.tr-main').scrollTop = scroll;
@@ -101,10 +113,10 @@ export class RevisionUI {
     const r = history ? this.c.history().find(r => r.id === this.historical) : this.c.current();
     if (!r) { this.body(`<div class="tr-empty">打开一条 AI 回复后开始检测。${button('检测最新回复', 'data-action="scan-latest"')}</div>`); return; }
     const editable = !history && this.c.editable(r);
-    this.body(`<div class="tr-bar"><span>第 ${r.number} 轮 · ${r.count} 处问题 / ${r.groups.length} ${r.segmented ? '句段' : '句'}</span>${history ? '' : button('重新检测', 'data-action="scan"')}</div><div class="tr-meta">回复 #${r.messageId + 1} · 版本 ${r.swipeId + 1}${this.c.generating ? ' · 正在生成' : ''}</div>${this.legend()}${!editable && !history ? '<p class="tr-meta">正文、回复版本或检测范围已变化，请重新检测。</p>' : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '本轮未发现匹配的问题。')}</p>`}</div>`);
+    this.body(`<div class="tr-review-bar"><span title="${r.count} 处问题，涉及 ${r.groups.length} 个句段">${r.count} 处</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${!editable && !history ? '<p class="tr-meta">正文或检测范围已变化，请重新检测。</p>' : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
     if (!history) {
       const eligible = r.groups.filter(ready), n = this.c.selectedCount(r);
-      this.dialog.querySelector('.tr-foot').innerHTML = `<label class="tr-check"><input type="checkbox" data-all ${eligible.length && eligible.length === n ? 'checked' : ''} ${!editable || !eligible.length ? 'disabled' : ''}>全选</label><div>${r.undo && editable ? button('撤销', 'data-action="undo"') : ''}${button(`应用所选 ${n}`, `class="tr-primary" data-action="apply" ${!editable || !n || this.edit || this.c.generating ? 'disabled' : ''}`)}</div>`;
+      this.dialog.querySelector('.tr-foot').innerHTML = `<label class="tr-check"><input type="checkbox" data-all ${eligible.length && eligible.length === n ? 'checked' : ''} ${!editable || !eligible.length ? 'disabled' : ''}>全选</label><div>${r.undo && editable ? button('撤销', 'data-action="undo"') : ''}${button(`应用所选 ${n}`, `class="tr-primary" data-action="apply" ${!editable || !n || this.edit ? 'disabled' : ''}`)}</div>`;
     }
   }
   row(g, editable) {
@@ -114,7 +126,7 @@ export class RevisionUI {
       const d = this.edit;
       body = `<textarea id="tr-edit" aria-label="编辑整句" rows="3">${esc(d.text)}</textarea><details class="tr-candidates" ${d.expanded ? 'open' : ''}><summary>替换候选</summary>${d.matches.filter(m => m.options.length || m.remove).map(m => `<div class="tr-candidate"><label for="tr-option-${m.id}">${esc(m.old)}</label><div class="tr-replace">${m.options.length ? `<select id="tr-option-${m.id}" data-option="${m.id}"><option value="" disabled ${m.value === null || m.value === '' ? 'selected' : ''}>替换为…</option>${m.options.map((v, i) => `<option value="${i}" ${m.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>${m.options.length > 1 ? button('换一个', `data-random="${m.id}"`) : ''}` : '<span class="tr-meta">未设置替换词</span>'}</div>${m.remove ? button('删除', `class="tr-delete" data-delete-match="${m.id}" aria-pressed="${m.value === ''}"`) : ''}</div>`).join('') || '<p class="tr-meta">请直接编辑整句。</p>'}</details><div class="tr-edit-actions">${button('不改这句', `data-keep="${g.id}"`)}<div>${button('取消', 'data-action="cancel-edit"')}${button('完成', 'class="tr-primary" data-action="finish-edit"')}</div></div>`;
     } else if (g.kept || g.matches.every(m => m.done) && !ready(g)) body += `<span class="tr-meta">${g.kept ? '已保留' : '已应用'}</span>`;
-    return `<section class="tr-row"><div>${body}</div>${editable ? `<div class="tr-row-controls">${editing ? '' : icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`)}<label class="tr-select"><input type="checkbox" data-select="${g.id}" aria-label="选择第${g.id + 1}句" ${g.selected && ready(g) ? 'checked' : ''} ${!ready(g) || this.c.generating ? 'disabled' : ''}></label></div>` : ''}</section>`;
+    return `<section class="tr-row ${editing ? 'tr-row-editing' : ''}"><div>${body}</div>${editable && !editing ? `<div class="tr-row-controls">${icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`)}<label class="tr-select"><input type="checkbox" data-select="${g.id}" aria-label="选择第${g.id + 1}句" ${g.selected && ready(g) ? 'checked' : ''} ${!ready(g) ? 'disabled' : ''}></label></div>` : ''}</section>`;
   }
   rulesView() {
     const rules = this.c.settings().rules;
@@ -126,7 +138,26 @@ export class RevisionUI {
   }
   settingsView() {
     const s = this.c.settings();
-    this.body(`<div class="tr-settings-row"><div><span class="tr-label">显示模式</span><div class="tr-themes">${button('日间', `data-theme="light" aria-pressed="${s.theme === 'light'}"`)}${button('夜间', `data-theme="dark" aria-pressed="${s.theme === 'dark'}"`)}</div></div><div><div class="tr-label"><label for="tr-opacity">背景透明度</label><output id="tr-opacity-value">${s.transparency}%</output></div><input type="range" id="tr-opacity" min="0" max="100" step="5" value="${s.transparency}"></div><label class="tr-palette"><span class="tr-label">修订配色</span><select id="tr-palette">${[['classic', '经典'], ['soft', '柔和'], ['vivid', '鲜明']].map(([v, t]) => `<option value="${v}" ${s.palette === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>${this.legend()}<p class="tr-sentence tr-preview">壁炉旁的空位<del>极具</del><ins>很有</ins>吸引力。<br>他的思绪<mark>像断了线的风筝一样</mark>。</p><label class="tr-check"><input type="checkbox" id="tr-auto" ${s.autoScan ? 'checked' : ''}>回复完成后自动检测</label><form id="tr-scope-form"><label class="tr-field">提取标签<textarea id="tr-extract-tags" rows="2" placeholder="content" aria-describedby="tr-extract-help">${esc(s.extractTags.join('\n'))}</textarea></label><p class="tr-meta" id="tr-extract-help">每行一个标签名。留空检测整条回复；填写后只检测这些标签内部。</p><label class="tr-field">排除标签<textarea id="tr-exclude-tags" rows="3" placeholder="status&#10;options" aria-describedby="tr-exclude-help">${esc(s.excludeTags.join('\n'))}</textarea></label><p class="tr-meta" id="tr-exclude-help">跳过标签及其中全部内容。排除优先于提取。</p><div class="tr-form-actions"><button class="tr-primary" type="submit">保存检测范围</button></div></form>`);
+    this.body(`<div class="tr-settings-row"><div><span class="tr-label">显示模式</span><div class="tr-themes">${button('日间', `data-theme="light" aria-pressed="${s.theme === 'light'}"`)}${button('夜间', `data-theme="dark" aria-pressed="${s.theme === 'dark'}"`)}</div></div><div><div class="tr-label"><label for="tr-opacity">背景透明度</label><output id="tr-opacity-value">${s.transparency}%</output></div><input type="range" id="tr-opacity" min="0" max="100" step="5" value="${s.transparency}"></div><label class="tr-palette"><span class="tr-label">修订配色</span><select id="tr-palette">${[['classic', '经典'], ['soft', '柔和'], ['vivid', '鲜明']].map(([v, t]) => `<option value="${v}" ${s.palette === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>${this.legend()}<p class="tr-sentence tr-preview">壁炉旁的空位<del>极具</del><ins>很有</ins>吸引力。<br>他的思绪<mark>像断了线的风筝一样</mark>。</p><label class="tr-check"><input type="checkbox" id="tr-auto" ${s.autoScan ? 'checked' : ''}>回复完成后自动检测</label><label class="tr-check"><input type="checkbox" id="tr-launcher-enabled" ${s.showLauncher ? 'checked' : ''}>显示悬浮球</label><div class="tr-scope-entries">${button(`标签提取 <span>${s.extractEnabled && s.extractTags.length ? s.extractTags.length + ' 个' : '全文'} ›</span>`, 'data-scope="extract"')}${button(`内容排除 <span>${s.excludeEnabled ? s.excludeRules.length + ' 条' : '关闭'} ›</span>`, 'data-scope="exclude"')}</div>`);
+  }
+  scopeView() {
+    const d = this.scopeDraft;
+    const extraction = this.screen === 'extract';
+    const toggle = `<label class="tr-check tr-scope-toggle">${extraction ? '标签提取' : '内容排除'}<input role="switch" type="checkbox" data-scope-toggle="${extraction ? 'extractEnabled' : 'excludeEnabled'}" ${d[extraction ? 'extractEnabled' : 'excludeEnabled'] ? 'checked' : ''}></label>`;
+    if (extraction) {
+      this.body(`${toggle}<label class="tr-field">输入标签（逗号分隔）<textarea id="tr-extract-tags" rows="2" placeholder="content, maintext">${esc(d.extractTags)}</textarea></label><p class="tr-meta">只检测标签内的文字；关闭或留空则检测全文。</p>`);
+    } else {
+      this.body(`${toggle}<p class="tr-meta">跳过开始到结束之间的内容，包含两端文字。</p><div class="tr-exclusion-list">${d.excludeRules.map((pair, i) => `<div class="tr-exclusion-row"><input data-boundary="start" data-pair="${i}" aria-label="排除 ${i + 1}：开始文字" placeholder="开始文字" maxlength="256" value="${esc(pair.start)}"><span>到</span><input data-boundary="end" data-pair="${i}" aria-label="排除 ${i + 1}：结束文字" placeholder="结束文字" maxlength="256" value="${esc(pair.end)}">${icon('xmark', `删除排除 ${i + 1}`, `data-remove-pair="${i}"`)}</div>`).join('')}</div>${button('＋ 添加规则', 'class="tr-add-pair" data-action="add-pair"')}`);
+    }
+    this.dialog.querySelector('.tr-foot').innerHTML = `${button('取消', 'data-screen="settings"')}${button('保存', 'class="tr-primary" data-action="save-scope"')}`;
+  }
+  saveScope() {
+    const d = this.scopeDraft;
+    // Validate even disabled drafts, but retain names while their switch is off.
+    const checked = normalizeScope({ ...d, extractEnabled: true, excludeEnabled: true });
+    Object.assign(this.c.settings(), { extractTags: checked.extractTags, excludeRules: clone(d.excludeRules), extractEnabled: d.extractEnabled, excludeEnabled: d.excludeEnabled });
+    this.c.saveSettings(); this.scopeDraft = null; this.edit = null; this.drafts.clear();
+    this.screen = 'settings'; this.render(); this.say('已保存，重新检测后生效。');
   }
   historyView() {
     const history = this.c.history();
@@ -138,7 +169,13 @@ export class RevisionUI {
     const data = b.dataset;
     if (data.action === 'close') { this.dialog.close(); return; }
     if (this.c.busy) return;
-    if (data.screen) { this.screen = data.screen; this.say(''); this.render(); return; }
+    if (data.screen) { this.scopeDraft = null; this.screen = data.screen; this.say(''); this.render(); return; }
+    if (data.scope) {
+      const s = this.c.settings();
+      this.scopeDraft = { extractTags: s.extractTags.join(', '), extractEnabled: s.extractEnabled, excludeEnabled: s.excludeEnabled, excludeRules: clone(s.excludeRules) };
+      this.screen = data.scope; this.say(''); this.render(); return;
+    }
+    if (data.removePair !== undefined) { this.scopeDraft.excludeRules.splice(Number(data.removePair), 1); this.render(); return; }
     if (data.theme) { this.c.settings().theme = data.theme; this.c.saveSettings(); this.render(); return; }
     if (data.rule) { this.ruleId = data.rule; this.screen = 'rule'; this.render(); return; }
     if (data.round) { this.historical = data.round; this.screen = 'snapshot'; this.render(); return; }
@@ -159,6 +196,11 @@ export class RevisionUI {
       this.drafts.delete(this.edit?.key); this.edit = null; this.render(); await this.c.persistDraft(); return;
     }
     switch (data.action) {
+      case 'add-pair':
+        if (this.scopeDraft.excludeRules.length >= 50) throw new Error('内容排除最多设置 50 条。');
+        this.scopeDraft.excludeRules.push({ start: '', end: '' }); this.render();
+        this.dialog.querySelector('.tr-exclusion-row:last-child input').focus(); break;
+      case 'save-scope': this.saveScope(); break;
       case 'scan-latest': this.edit = null; await this.c.detect(); break;
       case 'scan': {
         const r = this.c.current(); const m = this.c.context().chat[r?.messageId];
@@ -178,6 +220,8 @@ export class RevisionUI {
     }
   }
   input(e) {
+    if (e.target.id === 'tr-extract-tags') this.scopeDraft.extractTags = e.target.value;
+    if (e.target.dataset.boundary) this.scopeDraft.excludeRules[Number(e.target.dataset.pair)][e.target.dataset.boundary] = e.target.value;
     if (e.target.id === 'tr-edit' && this.edit) this.edit.text = e.target.value;
     if (e.target.id === 'tr-opacity') {
       this.c.settings().transparency = Number(e.target.value); this.theme();
@@ -193,6 +237,8 @@ export class RevisionUI {
   }
   async change(e) {
     const el = e.target;
+    if (el.dataset.scopeToggle) this.scopeDraft[el.dataset.scopeToggle] = el.checked;
+    if (el.id === 'tr-launcher-enabled') { this.c.settings().showLauncher = el.checked; this.badge(); this.c.saveSettings(); }
     if (el.id === 'tr-palette') { this.c.settings().palette = el.value; this.theme(); this.c.saveSettings(); }
     if (el.id === 'tr-auto') { this.c.settings().autoScan = el.checked; this.c.saveSettings(); }
     if (el.dataset.ruleEnabled) { this.c.settings().rules.find(r => r.id === el.dataset.ruleEnabled).enabled = el.checked; this.c.saveSettings(); }
@@ -201,13 +247,6 @@ export class RevisionUI {
     if (el.dataset.option !== undefined) { const m = this.edit.matches.find(m => m.id === Number(el.dataset.option)); m.value = m.options[Number(el.value)]; this.refreshEditor(); }
   }
   submit(e) {
-    if (e.target.id === 'tr-scope-form') {
-      const scope = normalizeScope({ extractTags: this.dialog.querySelector('#tr-extract-tags').value, excludeTags: this.dialog.querySelector('#tr-exclude-tags').value });
-      Object.assign(this.c.settings(), scope);
-      this.c.saveSettings(); this.edit = null; this.drafts.clear(); this.render();
-      this.say('检测范围已保存，返回修订后重新检测即可。');
-      return;
-    }
     if (e.target.id !== 'tr-rule-form') return;
     const val = id => this.dialog.querySelector(`#${id}`).value;
     const old = this.c.settings().rules.find(r => r.id === this.ruleId);

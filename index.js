@@ -1,5 +1,6 @@
-import { RevisionController, verifyChatSave, chatKey } from './controller.js';
+import { RevisionController, verifyChatSave } from './controller.js';
 import { RevisionUI } from './ui.js';
+import { attachAutoDetection } from './auto-detection.js';
 
 function init() {
   if (document.getElementById('tr-root')) return;
@@ -7,34 +8,23 @@ function init() {
   const getContext = () => SillyTavern.getContext();
   const c = new RevisionController(getContext, verifyChatSave);
   const ui = new RevisionUI(c);
-  const events = getContext().eventTypes ?? getContext().event_types;
-  const source = getContext().eventSource;
-  let timer, candidates = new Set();
-  const on = (type, callback) => { if (events[type]) source.on(events[type], callback); };
-  const schedule = id => {
-    if (!c.settings().autoScan) return;
-    if (Number.isInteger(Number(id))) candidates.add(Number(id));
-    if (c.generating) return;
-    clearTimeout(timer);
-    const key = chatKey(getContext());
-    timer = setTimeout(async () => {
-      if (c.generating || c.busy || key !== chatKey(getContext())) return;
-      const ids = [...candidates]; candidates.clear();
-      for (const target of ids) {
-        if (key !== chatKey(getContext()) || c.generating) break;
-        try { await c.detect(target, { auto: true }); }
-        catch (error) { ui.say(error.message, true); }
-      }
-    }, 180);
+  attachAutoDetection(c, ui);
+
+  const addWandEntry = () => {
+    const menu = document.getElementById('extensionsMenu');
+    if (!menu) return false;
+    if (document.getElementById('tr-wand-entry')) return true;
+    const entry = document.createElement('button');
+    entry.id = 'tr-wand-entry'; entry.type = 'button'; entry.className = 'list-group-item flex-container flexGap5';
+    entry.innerHTML = '<i class="fa-solid fa-pen-to-square extensionsMenuExtensionButton" aria-hidden="true"></i><span>词句修订</span>';
+    entry.addEventListener('click', () => ui.open());
+    menu.append(entry);
+    return true;
   };
-  on('GENERATION_STARTED', () => { c.generating = true; c.onChange(); });
-  on('CHARACTER_MESSAGE_RENDERED', id => schedule(id));
-  on('GENERATION_ENDED', () => { c.generating = false; schedule(c.latestReply()); c.onChange(); });
-  on('GENERATION_STOPPED', () => { c.generating = false; schedule(c.latestReply()); c.onChange(); });
-  on('MESSAGE_SWIPED', id => schedule(id));
-  on('MESSAGE_EDITED', () => { if (!c.busy) c.onChange(); });
-  on('MESSAGE_DELETED', () => { candidates.clear(); c.onChange(); });
-  on('CHAT_CHANGED', () => { clearTimeout(timer); candidates.clear(); c.generating = false; ui.resetChat(); });
+  if (!addWandEntry()) {
+    const observer = new MutationObserver(() => { if (addWandEntry()) observer.disconnect(); });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
 
   // Additional entry in the standard extension settings, using the host's icons.
   const host = document.getElementById('extensions_settings2') ?? document.getElementById('extensions_settings');
