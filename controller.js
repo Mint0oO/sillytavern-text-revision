@@ -1,4 +1,4 @@
-import { DEFAULT_RULES, scan, applySelected, ready, newId } from './engine.js';
+import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, scan, applySelected, ready, newId, normalizeScope, scopeKey } from './engine.js';
 
 export const KEY = 'text_revision';
 export const clone = value => structuredClone(value);
@@ -24,6 +24,8 @@ export class RevisionController {
     s.palette ??= 'soft';
     s.transparency ??= 0;
     s.autoScan ??= true;
+    s.extractTags ??= [];
+    s.excludeTags ??= clone(DEFAULT_EXCLUDE_TAGS);
     return s;
   }
   history() { return this.context().chatMetadata?.[KEY]?.rounds ?? []; }
@@ -44,7 +46,7 @@ export class RevisionController {
     return m;
   }
   editable(round) {
-    try { this.target(round); return !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
+    try { this.target(round); return round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
     catch { return false; }
   }
   async detect(messageId = this.latestReply(), { auto = false } = {}) {
@@ -53,8 +55,10 @@ export class RevisionController {
     if (!c.chatId && !c.getCurrentChatId?.()) throw new Error('请先打开并保存一个聊天。');
     if (!isReply(m)) throw new Error('当前没有可检测的 AI 回复。');
     const history = this.history();
-    if (auto && history.some(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m) && r.expected === m.mes)) return null;
-    const round = scan(m.mes, this.settings().rules);
+    const scope = normalizeScope(this.settings());
+    const previous = history.findLast(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m));
+    if (auto && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) return null;
+    const round = scan(m.mes, this.settings().rules, { scope });
     m.extra ??= {};
     m.extra[KEY] ??= { id: newId() };
     Object.assign(round, { chatKey: chatKey(c), messageId, messageUid: m.extra[KEY].id, swipeId: swipeId(m), number: (c.chatMetadata[KEY]?.total ?? 0) + 1 });

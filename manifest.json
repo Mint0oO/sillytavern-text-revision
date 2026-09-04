@@ -1,12 +1,12 @@
 {
-  "display_name": "正文修订",
+  "display_name": "词句修订",
   "loading_order": 100,
   "requires": [],
   "optional": [],
   "js": "index.js",
   "css": "style.css",
   "author": "Mint0oO",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "homePage": "https://github.com/Mint0oO/sillytavern-text-revision",
   "minimum_client_version": "1.13.4",
   "auto_update": false

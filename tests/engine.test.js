@@ -31,7 +31,9 @@ test('code, reasoning, links and markup attributes are excluded; rendered text i
   const r = detect('```\n极其疲惫。\n```\n<think>极度不安。</think>\n[链接](https://x.test/极其)\n<span title="极其">极其疲惫。</span>');
   assert.equal(r.count, 1);
   assert.ok(!inlineHTML(r.groups[0]).includes('<span title='));
-  assert.ok(inlineHTML(r.groups[0]).includes('&lt;span'));
+  assert.ok(!r.groups[0].original.includes('<span'));
+  const injected = scan('测试。', [{ find: '测试', values: ['<img src=x onerror=alert(1)>'], action: 'replace' }]);
+  assert.ok(inlineHTML(injected.groups[0]).includes('&lt;img'));
 });
 test('overlapping rules flag a single unresolved span without duplicate deletion', () => {
   const a = validateRule({ find: '极其疲惫', remove: true, action: 'delete' });

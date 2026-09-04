@@ -40,11 +40,11 @@ function init() {
   const host = document.getElementById('extensions_settings2') ?? document.getElementById('extensions_settings');
   if (host) {
     const open = document.createElement('button'); open.type = 'button'; open.className = 'menu_button';
-    open.textContent = '正文修订'; open.addEventListener('click', () => ui.open()); host.append(open);
+    open.textContent = '词句修订'; open.addEventListener('click', () => ui.open()); host.append(open);
   }
   if (getContext().SlashCommandParser && getContext().SlashCommand) {
     getContext().SlashCommandParser.addCommandObject(getContext().SlashCommand.fromProps({
-      name: 'text-revision', callback: async () => { await ui.open(); return ''; }, helpString: '打开正文修订面板。',
+      name: 'text-revision', callback: async () => { await ui.open(); return ''; }, helpString: '打开词句修订面板。',
     }));
   }
 }

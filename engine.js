@@ -43,12 +43,91 @@ function compile(rule) {
   return { regex, keys };
 }
 
+export const DEFAULT_EXCLUDE_TAGS = ['think', 'thinking', 'reasoning', 'script', 'style'];
+export function normalizeScope({ extractTags = [], excludeTags = DEFAULT_EXCLUDE_TAGS } = {}) {
+  const names = value => {
+    const input = Array.isArray(value) ? value.join('\n') : String(value ?? '');
+    if (input.length > 5000) throw new Error('标签设置过长，请减少标签数量。');
+    const list = input.split(/[\s,，]+/).map(s => s.trim()).filter(Boolean).map(s => {
+      const match = s.match(/^(?:<\/?([\p{L}_][\p{L}\p{N}_.:-]*)\/?\s*>|([\p{L}_][\p{L}\p{N}_.:-]*))$/u);
+      if (!match || s.length > 80) throw new Error('请填写标签名，例如 content 或 <content>，每行一个，不填写属性。');
+      return (match[1] ?? match[2]).toLowerCase();
+    });
+    if (list.length > 50) throw new Error('提取和排除标签各最多填写 50 个。');
+    return [...new Set(list)].sort();
+  };
+  return { extractTags: names(extractTags), excludeTags: names(excludeTags) };
+}
+export const scopeKey = scope => JSON.stringify(normalizeScope(scope));
+
 function protectedRanges(text) {
   const spans = [];
-  // Protect code, markup attributes, Markdown destinations and common reasoning blocks.
-  const patterns = [/```[^]*?(?:```|$)/g, /~~~[^]*?(?:~~~|$)/g, /`[^`\n]*`/g, /<(think|thinking|reasoning|script|style)\b[^>]*>[^]*?(?:<\/\1\s*>|$)/gi, /<[^>\n]+>/g, /\]\([^\n)]*\)/g, /https?:\/\/[^\s<>]+/g];
+  const patterns = [/```[^]*?(?:```|$)/g, /~~~[^]*?(?:~~~|$)/g, /`[^`\n]*`/g, /<!--[^]*?(?:-->|$)/g, /<!\[CDATA\[[^]*?(?:\]\]>|$)/g, /<\?[^]*?(?:\?>|$)/g, /<![^>]*>/g, /\]\([^\n)]*\)/g, /https?:\/\/[^\s<>]+/g];
   for (const regex of patterns) for (const m of text.matchAll(regex)) spans.push([m.index, m.index + m[0].length]);
   return spans;
+}
+
+function mergeRanges(ranges) {
+  const result = [];
+  for (const [start, end] of ranges.sort((a, b) => a[0] - b[0] || b[1] - a[1])) {
+    if (end <= start) continue;
+    const previous = result.at(-1);
+    if (previous && start <= previous[1]) previous[1] = Math.max(previous[1], end);
+    else result.push([start, end]);
+  }
+  return result;
+}
+
+export function textRanges(text, config) {
+  const scope = normalizeScope(config), ignored = mergeRanges(protectedRanges(text));
+  const extract = new Set(scope.extractTags), exclude = new Set(scope.excludeTags);
+  const tracked = new Set([...extract, ...exclude]);
+  const tags = [], included = [], excluded = [], stack = [];
+  const voidTags = new Set(['area', 'base', 'br', 'col', 'embed', 'hr', 'img', 'input', 'link', 'meta', 'param', 'source', 'track', 'wbr']);
+  // Tokenize offsets only. Never parse/re-serialize HTML, which changes source formatting.
+  const tokens = /<(\/?)([\p{L}_][\p{L}\p{N}_.:-]*)(?=[\s/>])(?:[^<>"']|"[^"]*"|'[^']*')*>/gu;
+  let matchedExtraction = false, tokenCount = 0, ignoredIndex = 0;
+  for (const m of text.matchAll(tokens)) {
+    if (++tokenCount > 10000) throw new Error('标签过多，请缩短本条回复后重试。');
+    const start = m.index, end = start + m[0].length, name = m[2].toLowerCase();
+    while (ignored[ignoredIndex]?.[1] <= start) ignoredIndex++;
+    if (ignored[ignoredIndex] && ignored[ignoredIndex][0] <= start) continue;
+    tags.push([start, end]);
+    if (!tracked.has(name)) continue;
+    // Everything inside an excluded block is opaque, except same-name nesting.
+    // Literal examples such as "<content>" inside <script> are not body wrappers.
+    if (stack.length && exclude.has(stack.at(-1).name) && name !== stack.at(-1).name) continue;
+    if (!m[1] && (/\/\s*>$/.test(m[0]) || voidTags.has(name))) {
+      if (extract.has(name)) matchedExtraction = true;
+      continue;
+    }
+    if (!m[1]) { stack.push({ name, start, contentStart: end }); continue; }
+    const opening = stack.at(-1);
+    if (!opening || opening.name !== name) throw new Error(`标签 <${name}> 未正确配对，请先检查回复中的标签。`);
+    stack.pop();
+    if (extract.has(name)) { included.push([opening.contentStart, start]); matchedExtraction = true; }
+    if (exclude.has(name)) excluded.push([opening.start, end]);
+  }
+  if (stack.length) throw new Error(`标签 <${stack.at(-1).name}> 没有闭合，请先补全标签后再检测。`);
+  // Also keep malformed tag-like markup out of the editable text.
+  for (const m of text.matchAll(/<\/?[\p{L}_][^<>\n]*(?:>|$)/gu)) tags.push([m.index, m.index + m[0].length]);
+  const allowed = extract.size ? mergeRanges(included) : [[0, text.length]];
+  const blocked = mergeRanges([...ignored, ...tags, ...excluded]);
+  const ranges = [];
+  let j = 0;
+  for (const [start, end] of allowed) {
+    let cursor = start;
+    while (blocked[j]?.[1] <= cursor) j++;
+    let k = j;
+    while (blocked[k] && blocked[k][0] < end) {
+      const [a, b] = blocked[k++];
+      if (a > cursor) ranges.push([cursor, Math.min(a, end)]);
+      cursor = Math.max(cursor, b);
+      if (cursor >= end) break;
+    }
+    if (cursor < end) ranges.push([cursor, end]);
+  }
+  return { ranges, scope, notice: extract.size && !matchedExtraction ? `未找到提取标签（${scope.extractTags.join('、')}），未检测其他内容。` : '', segmented: tags.length > 0 };
 }
 
 export function replacement(match) {
@@ -66,19 +145,19 @@ export function proposal(group) {
 }
 export const ready = g => !g.kept && proposal(g) !== (g.applied ?? g.original);
 export const processed = round => round.groups.reduce((n, g) => n + g.matches.filter(m => m.done).length, 0);
-export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now() } = {}) {
+export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now(), scope } = {}) {
   if (typeof text !== 'string' || text.length > LIMITS.text) throw new Error('单条回复超过 20 万字，暂不检测。');
   if (rules.length > LIMITS.rules) throw new Error('最多启用 200 条规则。');
   const compiled = rules.map(validateRule).filter(r => r.enabled).map(r => ({ ...r, ...compile(r) }));
-  const protectedText = protectedRanges(text), groups = [];
+  const selection = textRanges(text, scope), groups = [];
   let count = 0;
-  for (const sentence of text.matchAll(/[^。！？!?\n]+[。！？!?]?/g)) {
+  for (const [rangeStart, rangeEnd] of selection.ranges) {
+  for (const sentence of text.slice(rangeStart, rangeEnd).matchAll(/[^。！？!?\n]+[。！？!?]?/g)) {
+    sentence.index += rangeStart;
     if (sentence[0].length > LIMITS.sentence) throw new Error('存在超过 8000 字的连续句子，请先分段。');
     let found = [];
     for (const rule of compiled) {
       for (const m of sentence[0].matchAll(rule.regex)) {
-        const start = sentence.index + m.index, end = start + m[0].length;
-        if (protectedText.some(([a, b]) => start < b && end > a)) continue;
         const choice = rule.action === 'delete' ? '' : rule.action === 'replace' ? rule.values[Math.min(rule.values.length - 1, Math.floor(random() * rule.values.length))] : null;
         const generic = rule.kind === 'pattern' && rule.find === '像{A}一样';
         const atEnd = generic && !sentence[0].slice(m.index + m[0].length).replace(/[，,。！？!?；;\s”’」』）)]/g, '');
@@ -110,7 +189,8 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
     count += matches.length;
     if (count > LIMITS.matches) throw new Error('检出超过 1000 处，请缩小规则范围后重试。');
   }
-  return { id, time, base: text, expected: text, groups, count, undo: null };
+  }
+  return { id, time, base: text, expected: text, groups, count, undo: null, scope: selection.scope, notice: selection.notice, segmented: selection.segmented };
 }
 
 export function rebuild(round) {

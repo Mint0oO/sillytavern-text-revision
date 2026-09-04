@@ -47,6 +47,17 @@ test('in-flight generation cannot scan or apply', async () => {
   const f = fixture(); const r = await f.ctl.detect(); f.ctl.generating = true;
   await assert.rejects(f.ctl.detect(), /输出结束/); await assert.rejects(f.ctl.commit(r), /输出结束/);
 });
+test('changing extraction scope invalidates earlier suggestions and permits a fresh automatic scan', async () => {
+  const f = fixture(); const r = await f.ctl.detect();
+  f.ctl.settings().extractTags = ['content'];
+  assert.equal(f.ctl.editable(r), false); await assert.rejects(f.ctl.commit(r), /过期/);
+  const second = await f.ctl.detect(0, { auto: true });
+  assert.equal(second.count, 0); assert.match(second.notice, /未找到提取标签/);
+});
+test('v0.1.0 unscoped results stay readable but require rescanning before applying', async () => {
+  const f = fixture(); const r = await f.ctl.detect(); delete r.scope;
+  assert.equal(f.ctl.current().count, 2); assert.equal(f.ctl.editable(r), false);
+});
 test('server readback distinguishes group and character chats and checks swipe body', async t => {
   const f = fixture(); const r = await f.ctl.detect();
   f.ctx.characters = [{ name: '测试角色', avatar: 'sample.png' }]; f.ctx.getRequestHeaders = () => ({ 'Content-Type': 'application/json' });
