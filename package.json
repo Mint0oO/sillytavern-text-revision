@@ -1,11 +1,11 @@
 {
   "name": "sillytavern-text-revision",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "private": true,
   "type": "module",
   "scripts": {
     "test": "node --test tests/*.test.js",
-    "check": "node --check index.js && node --check auto-detection.js && node --check engine.js && node --check controller.js && node --check ui.js && node --check language.js",
+    "check": "node --check index.js && node --check auto-detection.js && node --check engine.js && node --check controller.js && node --check ui.js && node --check language.js && node --check sentences.js && node --check rule-editor.js && node --check rule-form.js",
     "dev": "node scripts/dev-server.mjs"
   }
 }

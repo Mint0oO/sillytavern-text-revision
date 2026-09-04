@@ -1,6 +1,7 @@
 // Pure text operations: no chat access, network requests, or DOM writes.
 import { analyzeWords, acceptsWord, CAPTURE_TYPES } from './language.js';
-export const ENGINE_VERSION = 2;
+import { sentenceSpans } from './sentences.js';
+export const ENGINE_VERSION = 3;
 export const DEFAULT_RULES = [
   { id: 'very', find: '极其', kind: 'word', values: ['十分', '非常'], remove: true, action: 'delete', enabled: true },
   { id: 'possess', find: '极具', kind: 'word', values: ['很有', '有'], remove: false, action: 'replace', enabled: true },
@@ -242,34 +243,34 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
   const selection = textRanges(text, scope), groups = [];
   let count = 0;
   for (const [rangeStart, rangeEnd] of selection.ranges) {
-  for (const sentence of text.slice(rangeStart, rangeEnd).matchAll(/[^。！？!?\n]+[。！？!?]?/g)) {
+  for (const sentence of sentenceSpans(text.slice(rangeStart, rangeEnd))) {
     sentence.index += rangeStart;
-    if (sentence[0].length > LIMITS.sentence) throw new Error('存在超过 8000 字的连续句子，请先分段。');
+    if (sentence.text.length > LIMITS.sentence) throw new Error('存在超过 8000 字的连续句子，请先分段。');
     let found = [];
     let tokens;
     for (const rule of compiled) {
       const literals = rule.kind === 'pattern' ? rule.find.split(/\{[A-Z]\}/).filter(Boolean) : [rule.find];
-      if (!literals.every(s => sentence[0].includes(s))) continue;
+      if (!literals.every(s => sentence.text.includes(s))) continue;
       const linguistic = needsLanguage([rule]);
-      if (linguistic) tokens ??= analyze(sentence[0]);
+      if (linguistic) tokens ??= analyze(sentence.text);
       const { regex, keys } = compile(rule, tokens ?? []);
-      for (const m of sentence[0].matchAll(regex)) {
+      for (const m of sentence.text.matchAll(regex)) {
         if (linguistic && (!tokens.some(t => t.start === m.index) || !tokens.some(t => t.end === m.index + m[0].length))) continue;
         if (keys.some((key, i) => {
           const condition = rule.captures[key[1]], [start, end] = m.indices[i + 1];
           return !['text', 'list'].includes(condition.type) && !tokens.some(t => t.start === start && t.end === end && acceptsWord(t, condition));
         })) continue;
-        const prefix = sentence[0].slice(0, m.index), suffix = sentence[0].slice(m.index + m[0].length);
+        const prefix = sentence.text.slice(0, m.index), suffix = sentence.text.slice(m.index + m[0].length);
         if (rule.before.length && !rule.before.some(w => prefix.endsWith(w)) || rule.after.length && !rule.after.some(w => suffix.startsWith(w))) continue;
         if (rule.notBefore.some(w => prefix.endsWith(w))) continue;
         // Only exceptions intersecting this occurrence suppress it, not the whole sentence.
         if (rule.exceptions.some(w => {
-          let at = sentence[0].indexOf(w, Math.max(0, m.index - w.length + 1));
+          let at = sentence.text.indexOf(w, Math.max(0, m.index - w.length + 1));
           return at >= 0 && at < m.index + m[0].length;
         })) continue;
         const choice = rule.action === 'delete' ? '' : rule.action === 'replace' ? rule.values[Math.min(rule.values.length - 1, Math.floor(random() * rule.values.length))] : null;
         const generic = rule.kind === 'pattern' && rule.find === '像{A}一样';
-        const atEnd = rule.reviewAtEnd && !sentence[0].slice(m.index + m[0].length).replace(/[，,。！？!?；;\s”’」』）)]/g, '');
+        const atEnd = rule.reviewAtEnd && /^[\s，,。.!！？?；;…"'”’」』）)\]］】〕〉》]*$/u.test(suffix);
         const trailing = rule.remove && rule.punctuation === 'following-comma' ? suffix.match(/^[ \t]*[，,][ \t]*/)?.[0] ?? '' : '';
         const coreEnd = m.index + m[0].length;
         found.push({ start: m.index, end: coreEnd + trailing.length, coreEnd, old: m[0] + trailing, trailing, reviewAtEnd: rule.reviewAtEnd, priority: rule.priority, ruleId: rule.id, captures: Object.fromEntries(keys.map((k, i) => [k, m[i + 1]])), options: rule.values, remove: rule.remove, value: atEnd && choice === '' ? null : choice, generic, reason: atEnd && choice === '' ? '句式删除后可能不完整，请手动修改。' : '', done: false });
@@ -290,7 +291,7 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
       const previous = matches.at(-1);
       if (previous && match.start < previous.end) {
         previous.end = Math.max(previous.end, match.end);
-        previous.old = sentence[0].slice(previous.start, previous.end);
+        previous.old = sentence.text.slice(previous.start, previous.end);
         previous.value = null;
         previous.options = [];
         previous.remove = false;
@@ -300,7 +301,7 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
     }
     if (!matches.length) continue;
     matches.forEach((m, i) => { m.id = i; });
-    const group = { id: groups.length, start: sentence.index, end: sentence.index + sentence[0].length, original: sentence[0], matches, manual: false, draft: '', applied: null, kept: false, selected: true };
+    const group = { id: groups.length, start: sentence.index, end: sentence.index + sentence.text.length, original: sentence.text, matches, manual: false, draft: '', applied: null, kept: false, selected: true };
     if (matches.some(m => m.reviewAtEnd && m.value === '') && /^(?:他|她|它|我|你|我们|你们|他们)?[。！？!?]?$/.test(proposal(group).trim())) matches.forEach(m => { m.value = null; m.reason = '删除后句子可能不完整，请手动修改。'; });
     group.selected = ready(group);
     groups.push(group);
