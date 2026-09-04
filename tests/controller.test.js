@@ -101,3 +101,19 @@ test('server readback distinguishes group and character chats and checks swipe b
   f.ctx.groupId = 'group1'; await verifyChatSave(f.ctx, r, f.ctx.chat[0].mes);
   assert.deepEqual(calls[1], ['/api/chats/group/get', { id: 'sample' }]);
 });
+
+
+test('removes the retired template once, preserves other rules and keeps launcher defaults', () => {
+  const f = fixture();
+  f.ctx.extensionSettings[KEY] = { rules: [
+    { id: 'wolf', find: '像{A}的孤狼一样', kind: 'pattern' },
+    { id: 'custom', find: '像{A}一样', kind: 'pattern' },
+  ] };
+  const s = f.ctl.settings();
+  assert.deepEqual(s.rules.map(r => r.id), ['custom']);
+  assert.equal(s.launcherTransparency, 0);
+  assert.equal(s.launcherColor, 'theme');
+  s.launcherColor = 'blue'; s.launcherTransparency = 45;
+  assert.equal(f.ctl.settings().launcherColor, 'blue');
+  assert.equal(f.ctl.settings().launcherTransparency, 45);
+});

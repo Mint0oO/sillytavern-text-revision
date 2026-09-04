@@ -19,12 +19,18 @@ export class RevisionController {
     c.extensionSettings[KEY] ??= {};
     const s = c.extensionSettings[KEY];
     s.rules ??= clone(DEFAULT_RULES);
+    if (!s.ruleDefaultsVersion) {
+      s.rules = s.rules.filter(r => !(r.kind === 'pattern' && r.find === '像{A}的孤狼一样'));
+      s.ruleDefaultsVersion = 1;
+    }
     s.theme ??= 'light';
     s.appearance ??= 'minimal';
     s.palette ??= 'soft';
     s.transparency ??= 0;
     s.autoScan ??= true;
     s.showLauncher ??= false;
+    s.launcherTransparency ??= 0;
+    s.launcherColor ??= 'theme';
     s.extractTags ??= [];
     s.excludeTags ??= clone(DEFAULT_EXCLUDE_TAGS);
     s.extractEnabled ??= true;

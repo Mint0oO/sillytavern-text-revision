@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_RULES, scan, proposal, applySelected, validateRule, inlineHTML } from '../engine.js';
+import { DEFAULT_RULES, scan, proposal, applySelected, validateRule, inlineHTML, parseRuleValues, formatRuleValues } from '../engine.js';
 const detect = text => scan(text, DEFAULT_RULES, { random: () => 0 });
 
 test('groups follow source order; partial application preserves unchecked sentences and whitespace', () => {
@@ -16,9 +16,8 @@ test('groups follow source order; partial application preserves unchecked senten
 });
 test('bounded metaphor templates retain configured content, unresolved predicates stay untouched', () => {
   assert.equal(proposal(detect('悲伤像洪水一样把他淹没了。').groups[0]), '悲伤把他淹没了。');
-  const wolf = detect('他像已经看透生死的孤狼一样。');
-  assert.equal(wolf.count, 1); assert.equal(proposal(wolf.groups[0]), '他已经看透生死。');
-  assert.match(inlineHTML(wolf.groups[0]), /已经看透生死<del>的孤狼一样/);
+  const contrast = detect('不是害怕，而是担心。');
+  assert.equal(proposal(contrast.groups[0]), '担心。');
   const kite = detect('他的思绪像断了线的风筝一样。');
   assert.equal(kite.groups[0].matches[0].value, null); assert.equal(kite.groups[0].selected, false);
 });
@@ -49,4 +48,13 @@ test('fixed words are literal; random candidates are stable until a new scan or 
   const r = scan('a+b。', [{ find: 'a+b', values: ['X', 'Y'], action: 'replace' }], { random: () => .99 });
   assert.equal(proposal(r.groups[0]), 'Y。'); assert.equal(proposal(r.groups[0]), 'Y。');
   assert.equal(scan('aaab。', [{ find: 'a+b', values: ['X'] }]).count, 0);
+});
+
+
+test('comma-separated candidates preserve quoted commas, Chinese punctuation and legacy newlines', () => {
+  assert.deepEqual(parseRuleValues('十分, 非常,, 很\n特别'), ['十分', '非常', '很', '特别']);
+  const values = ['{B}', '并非{A}，只是{B}', '轻声, 细语', '轻声说"你好"', '第一行\n第二行'];
+  assert.deepEqual(parseRuleValues(formatRuleValues(values)), values);
+  assert.throws(() => parseRuleValues('"轻声, 细语'), /未闭合/);
+  assert.throws(() => parseRuleValues('"你好"多余文字'), /英文逗号/);
 });

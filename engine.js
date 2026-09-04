@@ -5,13 +5,34 @@ export const DEFAULT_RULES = [
   { id: 'extreme', find: '极度', kind: 'word', values: ['十分'], remove: true, action: 'delete', enabled: true },
   { id: 'simile', find: '像{A}一样', kind: 'pattern', values: [], remove: true, action: 'delete', enabled: true },
   { id: 'contrast', find: '不是{A}，而是{B}', kind: 'pattern', values: ['{B}', '并非{A}，只是{B}'], remove: false, action: 'replace', enabled: true },
-  { id: 'wolf', find: '像{A}的孤狼一样', kind: 'pattern', values: ['{A}'], remove: false, action: 'replace', enabled: true },
 ];
 export const LIMITS = { text: 200000, sentence: 8000, rules: 200, matches: 1000 };
 // Phones may access a LAN tavern over HTTP, where crypto.randomUUID is absent.
 export const newId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
 const escapeRE = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export const escapeHTML = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// Comma-separated candidates; quote candidates containing literal commas or quotes.
+export const formatRuleValues = values => values.map(v => /[,"\r\n]/.test(v) ? `"${v.replaceAll('"', '""')}"` : v).join(', ');
+export function parseRuleValues(text) {
+  const values = [];
+  let value = '', quoted = false, closed = false;
+  const push = () => { if (value.trim()) values.push(value.trim()); value = ''; closed = false; };
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (quoted) {
+      if (c === '"' && text[i + 1] === '"') { value += '"'; i++; }
+      else if (c === '"') { quoted = false; closed = true; }
+      else value += c;
+    } else if (c === ',' || c === '\n' || c === '\r') push();
+    else if (closed) { if (!/\s/.test(c)) throw new Error('带引号的替换词后请使用英文逗号分隔。'); }
+    else if (c === '"' && !value.trim()) { value = ''; quoted = true; }
+    else value += c;
+  }
+  if (quoted) throw new Error('替换词的英文双引号未闭合。');
+  push();
+  return values;
+}
 
 export function validateRule(rule) {
   const find = String(rule.find ?? '').trim();
