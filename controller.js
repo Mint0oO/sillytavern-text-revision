@@ -20,6 +20,7 @@ export class RevisionController {
     const s = c.extensionSettings[KEY];
     s.rules ??= clone(DEFAULT_RULES);
     s.theme ??= 'light';
+    s.appearance ??= 'minimal';
     s.palette ??= 'soft';
     s.transparency ??= 0;
     s.autoScan ??= true;
@@ -29,6 +30,15 @@ export class RevisionController {
     s.extractEnabled ??= true;
     s.excludeEnabled ??= true;
     s.excludeRules ??= s.excludeTags.map(name => ({ start: `<${name}>`, end: `</${name}>` }));
+    // Only replace the unchanged former defaults; preserve custom exclusions.
+    if (!s.exclusionDefaultsVersion) {
+      const old = ['think', 'thinking', 'reasoning', 'script', 'style'];
+      if (s.excludeRules.length === old.length && old.every(name => s.excludeRules.some(p => p.start === `<${name}>` && p.end === `</${name}>`))) {
+        s.excludeTags = clone(DEFAULT_EXCLUDE_TAGS);
+        s.excludeRules = s.excludeTags.map(name => ({ start: `<${name}>`, end: `</${name}>` }));
+      }
+      s.exclusionDefaultsVersion = 1;
+    }
     return s;
   }
   history() { return this.context().chatMetadata?.[KEY]?.rounds ?? []; }

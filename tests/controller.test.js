@@ -71,6 +71,22 @@ test('changing extraction scope invalidates earlier suggestions and permits a fr
   const second = await f.ctl.detect(0, { auto: true });
   assert.equal(second.count, 0); assert.match(second.notice, /未找到提取标签/);
 });
+
+test('default exclusions narrow once while customized pairs and later edits are preserved', () => {
+  const pairs = names => names.map(name => ({ start: `<${name}>`, end: `</${name}>` }));
+  const defaults = pairs(['think', 'thinking']);
+  const old = pairs(['think', 'thinking', 'reasoning', 'script', 'style']);
+  const fresh = fixture();
+  assert.deepEqual(fresh.ctl.settings().excludeRules, defaults);
+  const upgraded = fixture();
+  upgraded.ctx.extensionSettings[KEY] = { excludeRules: structuredClone(old) };
+  assert.deepEqual(upgraded.ctl.settings().excludeRules, defaults);
+  upgraded.ctl.settings().excludeRules = structuredClone(old);
+  assert.deepEqual(upgraded.ctl.settings().excludeRules, old);
+  const custom = fixture(), customPairs = [...old, { start: 'image###', end: '###' }];
+  custom.ctx.extensionSettings[KEY] = { excludeRules: structuredClone(customPairs) };
+  assert.deepEqual(custom.ctl.settings().excludeRules, customPairs);
+});
 test('v0.1.0 unscoped results stay readable but require rescanning before applying', async () => {
   const f = fixture(); const r = await f.ctl.detect(); delete r.scope;
   assert.equal(f.ctl.current().count, 2); assert.equal(f.ctl.editable(r), false);

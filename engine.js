@@ -43,7 +43,7 @@ function compile(rule) {
   return { regex, keys };
 }
 
-export const DEFAULT_EXCLUDE_TAGS = ['think', 'thinking', 'reasoning', 'script', 'style'];
+export const DEFAULT_EXCLUDE_TAGS = ['think', 'thinking'];
 export function normalizeScope({ extractTags = [], excludeTags = DEFAULT_EXCLUDE_TAGS, extractEnabled = true, excludeEnabled = true, excludeRules, excludeRanges = [] } = {}) {
   const names = value => {
     const input = Array.isArray(value) ? value.join('\n') : String(value ?? '');

@@ -2,7 +2,8 @@ import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule
 import { clone } from './controller.js';
 
 const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
-const icon = (name, label, attrs) => button(`<i class="fa-solid fa-${name}" aria-hidden="true"></i>`, `aria-label="${label}" class="tr-icon" ${attrs}`);
+const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
+const icon = (name, label, attrs) => button(glyph(name), `aria-label="${label}" class="tr-icon" ${attrs}`);
 
 export class RevisionUI {
   constructor(controller) {
@@ -23,9 +24,16 @@ export class RevisionUI {
     this.launcher.id = 'tr-launcher';
     this.launcher.type = 'button';
     this.launcher.setAttribute('aria-label', '打开词句修订');
-    this.launcher.innerHTML = '<i class="fa-solid fa-pen-to-square" aria-hidden="true"></i><span>修订</span><small hidden></small>';
-    this.launcher.addEventListener('click', () => this.open());
+    this.launcher.innerHTML = `${glyph('pencil')}<small hidden></small>`;
+    this.launcher.title = '词句修订 · 拖动可移动';
+    this.launcher.addEventListener('click', e => {
+      // Touch activation is handled on release, including browsers that omit click after capture.
+      if (e.pointerType === 'touch') return;
+      if (this.suppressLauncherClick && e.detail !== 0) { this.suppressLauncherClick = false; return; }
+      this.run(() => this.open());
+    });
     document.body.append(this.launcher);
+    this.attachLauncherDrag();
     this.dialog.addEventListener('click', e => this.run(() => this.click(e)));
     this.dialog.addEventListener('input', e => this.input(e));
     this.dialog.addEventListener('change', e => this.run(() => this.change(e)));
@@ -45,6 +53,56 @@ export class RevisionUI {
     this.viewport();
     this.theme();
     this.badge();
+  }
+  attachLauncherDrag() {
+    try { this.launcherPosition = JSON.parse(localStorage.getItem('text-revision-launcher-position')); } catch { /* Optional device-local preference. */ }
+    const place = (x, y) => {
+      const v = window.visualViewport, size = 48, pad = 8;
+      const left = v?.offsetLeft ?? 0, top = v?.offsetTop ?? 0;
+      x = Math.max(left + pad, Math.min(x, left + (v?.width ?? innerWidth) - size - pad));
+      y = Math.max(top + pad, Math.min(y, top + (v?.height ?? innerHeight) - size - pad));
+      Object.assign(this.launcher.style, { left: `${x}px`, top: `${y}px`, right: 'auto' });
+      return { x, y };
+    };
+    const restore = () => {
+      const p = this.launcherPosition;
+      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) place(p.x, p.y);
+      else place((window.visualViewport?.width ?? innerWidth) - 58, 88);
+    };
+    restore();
+    window.addEventListener('resize', restore);
+    window.visualViewport?.addEventListener('resize', restore);
+    window.visualViewport?.addEventListener('scroll', restore);
+    let drag = null;
+    this.launcher.addEventListener('pointerdown', e => {
+      if (!e.isPrimary || e.button !== 0) return;
+      const rect = this.launcher.getBoundingClientRect();
+      drag = { id: e.pointerId, startX: e.clientX, startY: e.clientY, x: rect.left, y: rect.top, moved: false };
+      this.suppressLauncherClick = false;
+      this.launcher.setPointerCapture(e.pointerId);
+    });
+    this.launcher.addEventListener('pointermove', e => {
+      if (!drag || drag.id !== e.pointerId) return;
+      const dx = e.clientX - drag.startX, dy = e.clientY - drag.startY;
+      drag.moved ||= Math.hypot(dx, dy) > 6;
+      if (!drag.moved) return;
+      this.launcher.classList.add('tr-dragging');
+      this.launcherPosition = place(drag.x + dx, drag.y + dy);
+    });
+    const finish = e => {
+      if (!drag || drag.id !== e.pointerId) return;
+      const touchTap = e.type === 'pointerup' && e.pointerType === 'touch' && !drag.moved;
+      this.suppressLauncherClick = drag.moved;
+      if (drag.moved) {
+        try { localStorage.setItem('text-revision-launcher-position', JSON.stringify(this.launcherPosition)); } catch { /* Dragging works without storage. */ }
+      }
+      drag = null;
+      this.launcher.classList.remove('tr-dragging');
+      if (touchTap) this.run(() => this.open());
+    };
+    this.launcher.addEventListener('pointerup', finish);
+    this.launcher.addEventListener('pointercancel', finish);
+    this.launcher.addEventListener('lostpointercapture', finish);
   }
   async run(action) { try { await action(); } catch (error) { this.say(error.message, true); } }
   say(text, error = false) {
@@ -91,6 +149,8 @@ export class RevisionUI {
     this.dialog.style.setProperty('--tr-alpha', String(1 - s.transparency / 100));
     this.dialog.style.setProperty('--tr-fill', `${100 - s.transparency}%`);
     this.launcher.dataset.theme = s.theme;
+    this.dialog.dataset.appearance = s.appearance;
+    this.launcher.dataset.appearance = s.appearance;
   }
   render() {
     const scroll = this.dialog.querySelector('.tr-main').scrollTop;
@@ -113,7 +173,7 @@ export class RevisionUI {
     const r = history ? this.c.history().find(r => r.id === this.historical) : this.c.current();
     if (!r) { this.body(`<div class="tr-empty">打开一条 AI 回复后开始检测。${button('检测最新回复', 'data-action="scan-latest"')}</div>`); return; }
     const editable = !history && this.c.editable(r);
-    this.body(`<div class="tr-review-bar"><span title="${r.count} 处问题，涉及 ${r.groups.length} 个句段">${r.count} 处</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${!editable && !history ? '<p class="tr-meta">正文或检测范围已变化，请重新检测。</p>' : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
+    this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${!editable && !history ? '<p class="tr-meta">正文或检测范围已变化，请重新检测。</p>' : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
     if (!history) {
       const eligible = r.groups.filter(ready), n = this.c.selectedCount(r);
       this.dialog.querySelector('.tr-foot').innerHTML = `<label class="tr-check"><input type="checkbox" data-all ${eligible.length && eligible.length === n ? 'checked' : ''} ${!editable || !eligible.length ? 'disabled' : ''}>全选</label><div>${r.undo && editable ? button('撤销', 'data-action="undo"') : ''}${button(`应用所选 ${n}`, `class="tr-primary" data-action="apply" ${!editable || !n || this.edit ? 'disabled' : ''}`)}</div>`;
@@ -126,7 +186,12 @@ export class RevisionUI {
       const d = this.edit;
       body = `<textarea id="tr-edit" aria-label="编辑整句" rows="3">${esc(d.text)}</textarea><details class="tr-candidates" ${d.expanded ? 'open' : ''}><summary>替换候选</summary>${d.matches.filter(m => m.options.length || m.remove).map(m => `<div class="tr-candidate"><label for="tr-option-${m.id}">${esc(m.old)}</label><div class="tr-replace">${m.options.length ? `<select id="tr-option-${m.id}" data-option="${m.id}"><option value="" disabled ${m.value === null || m.value === '' ? 'selected' : ''}>替换为…</option>${m.options.map((v, i) => `<option value="${i}" ${m.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>${m.options.length > 1 ? button('换一个', `data-random="${m.id}"`) : ''}` : '<span class="tr-meta">未设置替换词</span>'}</div>${m.remove ? button('删除', `class="tr-delete" data-delete-match="${m.id}" aria-pressed="${m.value === ''}"`) : ''}</div>`).join('') || '<p class="tr-meta">请直接编辑整句。</p>'}</details><div class="tr-edit-actions">${button('不改这句', `data-keep="${g.id}"`)}<div>${button('取消', 'data-action="cancel-edit"')}${button('完成', 'class="tr-primary" data-action="finish-edit"')}</div></div>`;
     } else if (g.kept || g.matches.every(m => m.done) && !ready(g)) body += `<span class="tr-meta">${g.kept ? '已保留' : '已应用'}</span>`;
-    return `<section class="tr-row ${editing ? 'tr-row-editing' : ''}"><div>${body}</div>${editable && !editing ? `<div class="tr-row-controls">${icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`)}<label class="tr-select"><input type="checkbox" data-select="${g.id}" aria-label="选择第${g.id + 1}句" ${g.selected && ready(g) ? 'checked' : ''} ${!ready(g) ? 'disabled' : ''}></label></div>` : ''}</section>`;
+    if (editing) return `<section class="tr-row tr-row-editing">${body}</section>`;
+    const selected = g.selected && ready(g);
+    const content = editable && ready(g)
+      ? button(`<span class="tr-sentence">${inlineHTML(g)}</span>`, `class="tr-row-toggle" data-toggle="${g.id}" aria-pressed="${selected}" aria-label="${selected ? '取消选择' : '选择'}第${g.id + 1}字段：${esc(proposal(g))}"`)
+      : `<div class="tr-row-text">${body}</div>`;
+    return `<section class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''}">${content}${editable ? icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`) : ''}</section>`;
   }
   rulesView() {
     const rules = this.c.settings().rules;
@@ -138,16 +203,16 @@ export class RevisionUI {
   }
   settingsView() {
     const s = this.c.settings();
-    this.body(`<div class="tr-settings-row"><div><span class="tr-label">显示模式</span><div class="tr-themes">${button('日间', `data-theme="light" aria-pressed="${s.theme === 'light'}"`)}${button('夜间', `data-theme="dark" aria-pressed="${s.theme === 'dark'}"`)}</div></div><div><div class="tr-label"><label for="tr-opacity">背景透明度</label><output id="tr-opacity-value">${s.transparency}%</output></div><input type="range" id="tr-opacity" min="0" max="100" step="5" value="${s.transparency}"></div><label class="tr-palette"><span class="tr-label">修订配色</span><select id="tr-palette">${[['classic', '经典'], ['soft', '柔和'], ['vivid', '鲜明']].map(([v, t]) => `<option value="${v}" ${s.palette === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>${this.legend()}<p class="tr-sentence tr-preview">壁炉旁的空位<del>极具</del><ins>很有</ins>吸引力。<br>他的思绪<mark>像断了线的风筝一样</mark>。</p><label class="tr-check"><input type="checkbox" id="tr-auto" ${s.autoScan ? 'checked' : ''}>回复完成后自动检测</label><label class="tr-check"><input type="checkbox" id="tr-launcher-enabled" ${s.showLauncher ? 'checked' : ''}>显示悬浮球</label><div class="tr-scope-entries">${button(`标签提取 <span>${s.extractEnabled && s.extractTags.length ? s.extractTags.length + ' 个' : '全文'} ›</span>`, 'data-scope="extract"')}${button(`内容排除 <span>${s.excludeEnabled ? s.excludeRules.length + ' 条' : '关闭'} ›</span>`, 'data-scope="exclude"')}</div>`);
+    this.body(`<label class="tr-field">界面美化<select id="tr-appearance">${[['minimal', '极简'], ['paper', '暖纸'], ['mist', '青雾'], ['lavender', '淡紫']].map(([v, t]) => `<option value="${v}" ${s.appearance === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label><div class="tr-settings-row"><div><span class="tr-label">显示模式</span><div class="tr-themes">${button('日间', `data-theme="light" aria-pressed="${s.theme === 'light'}"`)}${button('夜间', `data-theme="dark" aria-pressed="${s.theme === 'dark'}"`)}</div></div><div><div class="tr-label"><label for="tr-opacity">背景透明度</label><output id="tr-opacity-value">${s.transparency}%</output></div><input type="range" id="tr-opacity" min="0" max="100" step="5" value="${s.transparency}"></div><label class="tr-palette"><span class="tr-label">修订配色</span><select id="tr-palette">${[['classic', '经典'], ['soft', '柔和'], ['vivid', '鲜明']].map(([v, t]) => `<option value="${v}" ${s.palette === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label></div>${this.legend()}<p class="tr-sentence tr-preview">壁炉旁的空位<del>极具</del><ins>很有</ins>吸引力。<br>他的思绪<mark>像断了线的风筝一样</mark>。</p><label class="tr-check"><input type="checkbox" id="tr-auto" ${s.autoScan ? 'checked' : ''}>回复完成后自动检测</label><label class="tr-check"><input type="checkbox" id="tr-launcher-enabled" ${s.showLauncher ? 'checked' : ''}>显示悬浮球</label><div class="tr-scope-entries">${button(`标签提取 <span>${s.extractEnabled && s.extractTags.length ? s.extractTags.length + ' 个' : '全文'} ›</span>`, 'data-scope="extract"')}${button(`内容排除 <span>${s.excludeEnabled ? s.excludeRules.length + ' 条' : '关闭'} ›</span>`, 'data-scope="exclude"')}</div>`);
   }
   scopeView() {
     const d = this.scopeDraft;
     const extraction = this.screen === 'extract';
     const toggle = `<label class="tr-check tr-scope-toggle">${extraction ? '标签提取' : '内容排除'}<input role="switch" type="checkbox" data-scope-toggle="${extraction ? 'extractEnabled' : 'excludeEnabled'}" ${d[extraction ? 'extractEnabled' : 'excludeEnabled'] ? 'checked' : ''}></label>`;
     if (extraction) {
-      this.body(`${toggle}<label class="tr-field">输入标签（逗号分隔）<textarea id="tr-extract-tags" rows="2" placeholder="content, maintext">${esc(d.extractTags)}</textarea></label><p class="tr-meta">只检测标签内的文字；关闭或留空则检测全文。</p>`);
+      this.body(`${toggle}<label class="tr-field">输入标签（逗号分隔）<textarea id="tr-extract-tags" rows="2" placeholder="content, maintext">${esc(d.extractTags)}</textarea></label><p class="tr-meta">只检测标签内的文字；关闭或留空则检测排除内容之外的全文。</p>`);
     } else {
-      this.body(`${toggle}<p class="tr-meta">跳过开始到结束之间的内容，包含两端文字。</p><div class="tr-exclusion-list">${d.excludeRules.map((pair, i) => `<div class="tr-exclusion-row"><input data-boundary="start" data-pair="${i}" aria-label="排除 ${i + 1}：开始文字" placeholder="开始文字" maxlength="256" value="${esc(pair.start)}"><span>到</span><input data-boundary="end" data-pair="${i}" aria-label="排除 ${i + 1}：结束文字" placeholder="结束文字" maxlength="256" value="${esc(pair.end)}">${icon('xmark', `删除排除 ${i + 1}`, `data-remove-pair="${i}"`)}</div>`).join('')}</div>${button('＋ 添加规则', 'class="tr-add-pair" data-action="add-pair"')}`);
+      this.body(`${toggle}<p class="tr-meta">跳过开始到结束之间的内容，包含两端文字。标签提取留空或关闭时，会检测排除后剩余的文字。</p><div class="tr-exclusion-list">${d.excludeRules.map((pair, i) => `<div class="tr-exclusion-row"><input data-boundary="start" data-pair="${i}" aria-label="排除 ${i + 1}：开始文字" placeholder="开始文字" maxlength="256" value="${esc(pair.start)}"><span>到</span><input data-boundary="end" data-pair="${i}" aria-label="排除 ${i + 1}：结束文字" placeholder="结束文字" maxlength="256" value="${esc(pair.end)}">${icon('xmark', `删除排除 ${i + 1}`, `data-remove-pair="${i}"`)}</div>`).join('')}</div>${button('＋ 添加规则', 'class="tr-add-pair" data-action="add-pair"')}`);
     }
     this.dialog.querySelector('.tr-foot').innerHTML = `${button('取消', 'data-screen="settings"')}${button('保存', 'class="tr-primary" data-action="save-scope"')}`;
   }
@@ -161,7 +226,7 @@ export class RevisionUI {
   }
   historyView() {
     const history = this.c.history();
-    this.body(`<p class="tr-meta">共检测 ${this.c.context().chatMetadata?.text_revision?.total ?? 0} 轮 · 保留最近 ${history.length} 轮</p>${history.slice().reverse().map(r => `<div class="tr-record"><div>第 ${r.number} 轮 · ${r.count} 处 / ${r.groups.length} ${r.segmented ? '句段' : '句'}${button('查看', `data-round="${esc(r.id)}"`)}</div><span class="tr-meta">回复 #${r.messageId + 1} · ${new Date(r.time).toLocaleString()} · 已处理 ${processed(r)}/${r.count} 处</span></div>`).join('') || '<p class="tr-empty">还没有检测记录。</p>'}`);
+    this.body(`<p class="tr-meta">共检测 ${this.c.context().chatMetadata?.text_revision?.total ?? 0} 轮 · 保留最近 ${history.length} 轮</p>${history.slice().reverse().map(r => `<div class="tr-record"><div><span class="tr-round-number" aria-label="第 ${r.number} 轮">${r.number}</span><span class="tr-record-count">${r.count}处问题/${r.groups.length}字段</span>${button('查看', `data-round="${esc(r.id)}"`)}</div><span class="tr-meta">回复 #${r.messageId + 1} · ${new Date(r.time).toLocaleString()} · 已处理 ${processed(r)}/${r.count} 处</span></div>`).join('') || '<p class="tr-empty">还没有检测记录。</p>'}`);
   }
   async click(e) {
     const b = e.target.closest('button');
@@ -169,6 +234,16 @@ export class RevisionUI {
     const data = b.dataset;
     if (data.action === 'close') { this.dialog.close(); return; }
     if (this.c.busy) return;
+    if (data.toggle !== undefined) {
+      const r = this.c.current();
+      this.c.target(r);
+      if (!this.c.editable(r)) throw new Error('正文或检测范围已变化，请重新检测。');
+      const g = r.groups[Number(data.toggle)];
+      if (ready(g)) g.selected = !g.selected;
+      this.render();
+      this.dialog.querySelector(`[data-toggle="${g.id}"]`)?.focus({ preventScroll: true });
+      return;
+    }
     if (data.screen) { this.scopeDraft = null; this.screen = data.screen; this.say(''); this.render(); return; }
     if (data.scope) {
       const s = this.c.settings();
@@ -242,7 +317,7 @@ export class RevisionUI {
     if (el.id === 'tr-palette') { this.c.settings().palette = el.value; this.theme(); this.c.saveSettings(); }
     if (el.id === 'tr-auto') { this.c.settings().autoScan = el.checked; this.c.saveSettings(); }
     if (el.dataset.ruleEnabled) { this.c.settings().rules.find(r => r.id === el.dataset.ruleEnabled).enabled = el.checked; this.c.saveSettings(); }
-    if (el.dataset.select !== undefined) { this.c.current().groups[Number(el.dataset.select)].selected = el.checked; this.render(); }
+    if (el.id === 'tr-appearance') { this.c.settings().appearance = el.value; this.theme(); this.c.saveSettings(); }
     if (el.hasAttribute('data-all')) { this.c.current().groups.filter(ready).forEach(g => { g.selected = el.checked; }); this.render(); }
     if (el.dataset.option !== undefined) { const m = this.edit.matches.find(m => m.id === Number(el.dataset.option)); m.value = m.options[Number(el.value)]; this.refreshEditor(); }
   }

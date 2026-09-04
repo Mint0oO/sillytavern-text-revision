@@ -4,6 +4,14 @@ import { scan, applySelected, DEFAULT_RULES, normalizeScope, proposal } from '..
 const run = (text, scope) => scan(text, DEFAULT_RULES, { scope, random: () => 0 });
 const scope = { extractTags: ['content'], excludeTags: ['status', 'think'] };
 
+test('default scope finds untagged body while keeping only think and thinking excluded', () => {
+  const text = '<think>极其谨慎。</think>\n正文极其简短。\n<thinking>极度不安。</thinking>\n<status>极具吸引力。</status>';
+  const r = run(text);
+  assert.equal(r.count, 2);
+  applySelected(r);
+  assert.equal(r.expected, '<think>极其谨慎。</think>\n正文简短。\n<thinking>极度不安。</thinking>\n<status>很有吸引力。</status>');
+});
+
 test('extracts every matching body block and excludes nested content, with exact source preservation', () => {
   const text = '<think>极其谨慎。</think>\n<content id="1">你极其疲惫。<status>他极度紧张。</status>空位极具吸引力。</content>\n<aside>极其安静。</aside>\n<content>她极其简短。</content>';
   const r = run(text, scope);
