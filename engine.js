@@ -1,10 +1,13 @@
 // Pure text operations: no chat access, network requests, or DOM writes.
+import { analyzeWords, acceptsWord, CAPTURE_TYPES } from './language.js';
+export const ENGINE_VERSION = 2;
 export const DEFAULT_RULES = [
   { id: 'very', find: '极其', kind: 'word', values: ['十分', '非常'], remove: true, action: 'delete', enabled: true },
   { id: 'possess', find: '极具', kind: 'word', values: ['很有', '有'], remove: false, action: 'replace', enabled: true },
   { id: 'extreme', find: '极度', kind: 'word', values: ['十分'], remove: true, action: 'delete', enabled: true },
-  { id: 'simile', find: '像{A}一样', kind: 'pattern', values: [], remove: true, action: 'delete', enabled: true },
+  { id: 'simile', find: '像{A}一样', kind: 'pattern', values: [], remove: true, action: 'delete', enabled: true, punctuation: 'following-comma', boundary: 'clause' },
   { id: 'contrast', find: '不是{A}，而是{B}', kind: 'pattern', values: ['{B}', '并非{A}，只是{B}'], remove: false, action: 'replace', enabled: true },
+  { id: 'word-extreme', find: '{A}极了', kind: 'pattern', captures: { A: { type: 'word', words: [] } }, values: ['很{A}'], remove: false, action: 'replace', enabled: true, priority: 10, notBefore: ['不', '没', '没有', '很', '非常', '太', '更', '最'] },
 ];
 export const LIMITS = { text: 200000, sentence: 8000, rules: 200, matches: 1000 };
 // Phones may access a LAN tavern over HTTP, where crypto.randomUUID is absent.
@@ -38,29 +41,58 @@ export function validateRule(rule) {
   const find = String(rule.find ?? '').trim();
   if (!find || find.length > 256) throw new Error('识别内容需要 1–256 个字符。');
   const kind = rule.kind === 'pattern' ? 'pattern' : 'word';
-  const keys = kind === 'pattern' ? find.match(/\{[AB]\}/g) ?? [] : [];
-  if (new Set(keys).size !== keys.length || /\{[AB]\}$/.test(find) && find === keys[0]) throw new Error('句式需要固定文字，{A} 和 {B} 各只能出现一次。');
-  if (kind === 'pattern' && /\{[AB]\}\{[AB]\}/.test(find)) throw new Error('两个占位符之间需要固定文字。');
-  if (kind === 'pattern' && /^\{[AB]\}/.test(find)) throw new Error('句式开头需要固定文字，例如“像{A}一样”。');
+  const keys = kind === 'pattern' ? find.match(/\{[A-Z]\}/g) ?? [] : [];
+  if (new Set(keys).size !== keys.length || find === keys[0] || keys.length > 4) throw new Error('句式需要固定文字，最多使用 4 个不重复的占位符（{A} 到 {Z}）。');
+  if (kind === 'pattern' && /\{[A-Z]\}\{[A-Z]\}/.test(find)) throw new Error('两个占位符之间需要固定文字。');
+  const captures = {};
+  for (const key of keys) {
+    const name = key[1], input = rule.captures?.[name] ?? {};
+    const type = Object.hasOwn(CAPTURE_TYPES, input.type) ? input.type : 'text';
+    const words = parseConditionWords(input.words);
+    if (type === 'list' && !words.length) throw new Error(`${name} 选择了“仅指定词语”，请填写允许词。`);
+    captures[name] = { type, words };
+  }
+  if (keys.filter(key => captures[key[1]].type === 'text').length > 2) throw new Error('任意文字占位符最多使用两个，其他占位符请设置词性或指定词语。');
+  if (kind === 'pattern' && /^\{[A-Z]\}/.test(find) && captures[find[1]].type === 'text') throw new Error('开头的占位符需要指定词性或词语，以免把主语一起替换。');
   const values = [...new Set((Array.isArray(rule.values) ? rule.values : []).map(String).map(s => s.trim()).filter(Boolean))];
   if (values.length > 100 || values.some(s => s.length > 1000)) throw new Error('每条规则最多 100 个候选，每个候选最多 1000 字。');
-  if (kind === 'pattern' && values.some(v => (v.match(/\{[AB]\}/g) ?? []).some(k => !keys.includes(k)))) throw new Error('替换候选使用了识别句式中不存在的占位符。');
+  if (kind === 'pattern' && values.some(v => (v.match(/\{[A-Z]\}/g) ?? []).some(k => !keys.includes(k)))) throw new Error('替换候选使用了识别句式中不存在的占位符。');
   const remove = Boolean(rule.remove);
   const action = ['delete', 'replace', 'review'].includes(rule.action) ? rule.action : remove ? 'delete' : values.length ? 'replace' : 'review';
   if (action === 'delete' && !remove) throw new Error('默认删除需要先开启“允许删除”。');
   if (action === 'replace' && !values.length) throw new Error('默认替换需要至少一个替换候选。');
-  return { id: String(rule.id || newId()), find, kind, values, remove, action, enabled: rule.enabled !== false };
+  const priority = Number(rule.priority ?? 0);
+  if (!Number.isInteger(priority) || priority < 0 || priority > 100) throw new Error('优先级需要是 0–100 的整数，数字越大越优先。');
+  return { id: String(rule.id || newId()), find, kind, values, remove, action, enabled: rule.enabled !== false, captures,
+    punctuation: rule.punctuation === 'following-comma' ? rule.punctuation : 'none',
+    boundary: rule.boundary === 'clause' ? 'clause' : 'sentence', priority,
+    before: parseConditionWords(rule.before), after: parseConditionWords(rule.after), notBefore: parseConditionWords(rule.notBefore), exceptions: parseConditionWords(rule.exceptions),
+    reviewAtEnd: rule.reviewAtEnd === undefined ? kind === 'pattern' && find === '像{A}一样' : Boolean(rule.reviewAtEnd) };
 }
 
-function compile(rule) {
+export function parseConditionWords(value = []) {
+  const words = [...new Set((Array.isArray(value) ? value : String(value).split(/[\n,，]/)).map(String).map(s => s.trim()).filter(Boolean))];
+  if (words.length > 100 || words.some(w => w.length > 100)) throw new Error('条件词最多 100 个，每个最多 100 字。');
+  return words;
+}
+export const needsLanguage = rules => rules.some(r => r.enabled !== false && r.kind === 'pattern' && Object.values(r.captures ?? {}).some(c => !['text', 'list'].includes(c.type) && c.type));
+
+function compile(rule, tokens) {
   const keys = [];
-  const bits = rule.kind === 'pattern' ? rule.find.split(/(\{[AB]\})/g) : [rule.find];
+  const bits = rule.kind === 'pattern' ? rule.find.split(/(\{[A-Z]\})/g) : [rule.find];
   const regex = new RegExp(bits.map((part, i) => {
-    if (rule.kind !== 'pattern' || !/^\{[AB]\}$/.test(part)) return escapeRE(part);
+    if (rule.kind !== 'pattern' || !/^\{[A-Z]\}$/.test(part)) return escapeRE(part);
     keys.push(part);
+    const condition = rule.captures[part[1]];
+    if (condition.type !== 'text') {
+      const words = condition.type === 'list' ? condition.words : tokens.filter(t => acceptsWord(t, condition)).map(t => t.word);
+      const alternatives = [...new Set(words)].sort((a, b) => b.length - a.length).map(escapeRE);
+      return alternatives.length ? `(${alternatives.join('|')})` : '((?!))';
+    }
     // Bounded captures cannot cross a sentence or line. No user-supplied regex executes.
-    return i === bits.length - 2 && bits.at(-1) === '' ? '([^。！？!?；;\n]{1,200})' : '([^。！？!?；;\n]{1,200}?)';
-  }).join(''), 'g');
+    const chars = rule.boundary === 'clause' ? '[^，,。！？!?；;\n]' : '[^。！？!?；;\n]';
+    return `(${chars}{1,200}${i === bits.length - 2 && bits.at(-1) === '' ? '' : '?'})`;
+  }).join(''), 'gd');
   return { regex, keys };
 }
 
@@ -187,7 +219,9 @@ export function textRanges(text, config) {
 }
 
 export function replacement(match) {
-  return match.value === null ? null : match.value.replace(/\{[AB]\}/g, k => match.captures[k] ?? k);
+  if (match.value === null) return null;
+  const result = match.value.replace(/\{[A-Z]\}/g, k => match.captures[k] ?? k);
+  return result === '' ? '' : result + (match.trailing ?? '');
 }
 export function proposal(group) {
   if (group.kept) return group.applied ?? group.original;
@@ -201,10 +235,10 @@ export function proposal(group) {
 }
 export const ready = g => !g.kept && proposal(g) !== (g.applied ?? g.original);
 export const processed = round => round.groups.reduce((n, g) => n + g.matches.filter(m => m.done).length, 0);
-export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now(), scope } = {}) {
+export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now(), scope, analyze = analyzeWords } = {}) {
   if (typeof text !== 'string' || text.length > LIMITS.text) throw new Error('单条回复超过 20 万字，暂不检测。');
   if (rules.length > LIMITS.rules) throw new Error('最多启用 200 条规则。');
-  const compiled = rules.map(validateRule).filter(r => r.enabled).map(r => ({ ...r, ...compile(r) }));
+  const compiled = rules.map(validateRule).filter(r => r.enabled);
   const selection = textRanges(text, scope), groups = [];
   let count = 0;
   for (const [rangeStart, rangeEnd] of selection.ranges) {
@@ -212,17 +246,44 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
     sentence.index += rangeStart;
     if (sentence[0].length > LIMITS.sentence) throw new Error('存在超过 8000 字的连续句子，请先分段。');
     let found = [];
+    let tokens;
     for (const rule of compiled) {
-      for (const m of sentence[0].matchAll(rule.regex)) {
+      const literals = rule.kind === 'pattern' ? rule.find.split(/\{[A-Z]\}/).filter(Boolean) : [rule.find];
+      if (!literals.every(s => sentence[0].includes(s))) continue;
+      const linguistic = needsLanguage([rule]);
+      if (linguistic) tokens ??= analyze(sentence[0]);
+      const { regex, keys } = compile(rule, tokens ?? []);
+      for (const m of sentence[0].matchAll(regex)) {
+        if (linguistic && (!tokens.some(t => t.start === m.index) || !tokens.some(t => t.end === m.index + m[0].length))) continue;
+        if (keys.some((key, i) => {
+          const condition = rule.captures[key[1]], [start, end] = m.indices[i + 1];
+          return !['text', 'list'].includes(condition.type) && !tokens.some(t => t.start === start && t.end === end && acceptsWord(t, condition));
+        })) continue;
+        const prefix = sentence[0].slice(0, m.index), suffix = sentence[0].slice(m.index + m[0].length);
+        if (rule.before.length && !rule.before.some(w => prefix.endsWith(w)) || rule.after.length && !rule.after.some(w => suffix.startsWith(w))) continue;
+        if (rule.notBefore.some(w => prefix.endsWith(w))) continue;
+        // Only exceptions intersecting this occurrence suppress it, not the whole sentence.
+        if (rule.exceptions.some(w => {
+          let at = sentence[0].indexOf(w, Math.max(0, m.index - w.length + 1));
+          return at >= 0 && at < m.index + m[0].length;
+        })) continue;
         const choice = rule.action === 'delete' ? '' : rule.action === 'replace' ? rule.values[Math.min(rule.values.length - 1, Math.floor(random() * rule.values.length))] : null;
         const generic = rule.kind === 'pattern' && rule.find === '像{A}一样';
-        const atEnd = generic && !sentence[0].slice(m.index + m[0].length).replace(/[，,。！？!?；;\s”’」』）)]/g, '');
-        found.push({ start: m.index, end: m.index + m[0].length, old: m[0], ruleId: rule.id, captures: Object.fromEntries(rule.keys.map((k, i) => [k, m[i + 1]])), options: rule.values, remove: rule.remove, value: atEnd ? null : choice, generic, reason: atEnd ? '句式删除后可能不完整，请手动修改。' : '', done: false });
+        const atEnd = rule.reviewAtEnd && !sentence[0].slice(m.index + m[0].length).replace(/[，,。！？!?；;\s”’」』）)]/g, '');
+        const trailing = rule.remove && rule.punctuation === 'following-comma' ? suffix.match(/^[ \t]*[，,][ \t]*/)?.[0] ?? '' : '';
+        const coreEnd = m.index + m[0].length;
+        found.push({ start: m.index, end: coreEnd + trailing.length, coreEnd, old: m[0] + trailing, trailing, reviewAtEnd: rule.reviewAtEnd, priority: rule.priority, ruleId: rule.id, captures: Object.fromEntries(keys.map((k, i) => [k, m[i + 1]])), options: rule.values, remove: rule.remove, value: atEnd && choice === '' ? null : choice, generic, reason: atEnd && choice === '' ? '句式删除后可能不完整，请手动修改。' : '', done: false });
         if (found.length > LIMITS.matches) throw new Error('匹配过多，请缩小规则范围后重试。');
       }
     }
     // A specific template wins over the generic template covering the same span.
-    found = found.filter(m => !m.generic || !found.some(n => !n.generic && n.start === m.start && n.end === m.end));
+    found = found.filter(m => !m.generic || !found.some(n => !n.generic && n.priority >= m.priority && n.start === m.start && n.end === m.end));
+    // Resolve priority before merging conflicts. Equal-priority overlaps remain reviewable.
+    const preferred = [];
+    for (const match of [...found].sort((a, b) => b.priority - a.priority)) {
+      if (!preferred.some(m => m.priority > match.priority && m.start < match.end && match.start < m.end)) preferred.push(match);
+    }
+    found = preferred;
     found.sort((a, b) => a.start - b.start || b.end - a.end);
     const matches = [];
     for (const match of found) {
@@ -234,19 +295,20 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
         previous.options = [];
         previous.remove = false;
         previous.reason = '多条规则重叠，请手动修改。';
+        previous.trailing = '';
       } else matches.push(match);
     }
     if (!matches.length) continue;
     matches.forEach((m, i) => { m.id = i; });
     const group = { id: groups.length, start: sentence.index, end: sentence.index + sentence[0].length, original: sentence[0], matches, manual: false, draft: '', applied: null, kept: false, selected: true };
-    if (/^(?:他|她|它|我|你|我们|你们|他们)?[。！？!?]?$/.test(proposal(group).trim())) matches.forEach(m => { m.value = null; m.reason = '删除后句子可能不完整，请手动修改。'; });
+    if (matches.some(m => m.reviewAtEnd && m.value === '') && /^(?:他|她|它|我|你|我们|你们|他们)?[。！？!?]?$/.test(proposal(group).trim())) matches.forEach(m => { m.value = null; m.reason = '删除后句子可能不完整，请手动修改。'; });
     group.selected = ready(group);
     groups.push(group);
     count += matches.length;
     if (count > LIMITS.matches) throw new Error('检出超过 1000 处，请缩小规则范围后重试。');
   }
   }
-  return { id, time, base: text, expected: text, groups, count, undo: null, scope: selection.scope, notice: selection.notice, segmented: selection.segmented };
+  return { id, time, engineVersion: ENGINE_VERSION, base: text, expected: text, groups, count, undo: null, scope: selection.scope, notice: selection.notice, segmented: selection.segmented };
 }
 
 export function rebuild(round) {
@@ -290,7 +352,7 @@ export function inlineHTML(group) {
     result += escapeHTML(group.original.slice(cursor, m.start));
     const next = replacement(m);
     if (next === null) result += `<mark title="${escapeHTML(m.reason || '请手动修改或选择候选')}">${escapeHTML(m.old)}</mark>`;
-    else if ((m.value === '{A}' || m.value === '{B}') && next) {
+    else if (/^\{[A-Z]\}$/.test(m.value) && next && !m.trailing) {
       const at = m.value === '{A}' ? m.old.indexOf(next) : m.old.lastIndexOf(next);
       result += `<del>${escapeHTML(m.old.slice(0, at))}</del>${escapeHTML(next)}<del>${escapeHTML(m.old.slice(at + next.length))}</del>`;
     } else result += diffHTML(m.old, next);

@@ -1,5 +1,6 @@
-import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, parseRuleValues, formatRuleValues } from './engine.js';
+import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, parseRuleValues, formatRuleValues, scan, needsLanguage } from './engine.js';
 import { clone } from './controller.js';
+import { CAPTURE_TYPES, ensureLanguage } from './language.js';
 
 const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
 const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
@@ -201,11 +202,41 @@ export class RevisionUI {
   }
   ruleForm() {
     if (!this.ruleDrafts.has(this.ruleId)) {
-      const r = this.c.settings().rules.find(r => r.id === this.ruleId) ?? { find: '', values: [], kind: 'word', action: 'review', remove: false };
+      const r = this.c.settings().rules.find(r => r.id === this.ruleId) ?? { find: '', values: [], kind: 'word', action: 'review', remove: false, boundary: 'clause' };
       this.ruleDrafts.set(this.ruleId, { ...clone(r), valuesText: formatRuleValues(r.values) });
     }
     const r = this.ruleDrafts.get(this.ruleId);
-    return `<form id="tr-rule-form" class="tr-rule-editor"><label class="tr-field">识别内容<input id="tr-find" data-rule-field="find" required maxlength="256" value="${esc(r.find)}"></label><label class="tr-field"><span class="tr-field-heading">替换词 <span class="tr-meta">用英文逗号 , 分隔</span></span><textarea id="tr-values" data-rule-field="valuesText" rows="2" placeholder="十分, 非常">${esc(r.valuesText)}</textarea></label><label class="tr-check"><input id="tr-remove" data-rule-field="remove" type="checkbox" ${r.remove ? 'checked' : ''}>允许删除</label><label class="tr-field">默认处理<select id="tr-action" data-rule-field="action">${[['review', '仅标记待改'], ['delete', '删除'], ['replace', '随机选择替换词']].map(([value, text]) => `<option value="${value}" ${r.action === value ? 'selected' : ''}>${text}</option>`).join('')}</select></label><details ${r.kind === 'pattern' ? 'open' : ''}><summary>句式设置</summary><label class="tr-field">匹配方式<select id="tr-kind" data-rule-field="kind"><option value="word" ${r.kind === 'word' ? 'selected' : ''}>固定词语</option><option value="pattern" ${r.kind === 'pattern' ? 'selected' : ''}>句式模板</option></select></label><p class="tr-meta">例如：识别「不是{A}，而是{B}」，替换为「{B}」。<br>「不是害怕，而是担心」会改为「担心」。<br>{A}、{B} 代表句中变化的内容；替换词写哪个，就保留哪部分。识别模板中，每个占位符只能出现一次。</p></details><div class="tr-form-actions">${button('取消', 'data-action="cancel-rule"')}<button type="submit" class="tr-primary">保存规则</button></div></form>`;
+    return `<form id="tr-rule-form" class="tr-rule-editor"><label class="tr-field">识别内容<input id="tr-find" data-rule-field="find" required maxlength="256" value="${esc(r.find)}"></label><label class="tr-field"><span class="tr-field-heading">替换词 <span class="tr-meta">用英文逗号 , 分隔</span></span><textarea id="tr-values" data-rule-field="valuesText" rows="2" placeholder="十分, 非常">${esc(r.valuesText)}</textarea></label><label class="tr-check"><input id="tr-remove" data-rule-field="remove" type="checkbox" ${r.remove ? 'checked' : ''}>允许删除</label><label class="tr-field">默认处理<select id="tr-action" data-rule-field="action">${[['review', '仅标记待改'], ['delete', '删除'], ['replace', '随机选择替换词']].map(([value, text]) => `<option value="${value}" ${r.action === value ? 'selected' : ''}>${text}</option>`).join('')}</select></label><details ${r.kind === 'pattern' ? 'open' : ''}><summary>句式设置</summary><label class="tr-field">匹配方式<select id="tr-kind" data-rule-field="kind"><option value="word" ${r.kind === 'word' ? 'selected' : ''}>固定词语</option><option value="pattern" ${r.kind === 'pattern' ? 'selected' : ''}>句式模板</option></select></label><p class="tr-meta">例如：识别「不是{A}，而是{B}」，替换为「{B}」。<br>「不是害怕，而是担心」会改为「担心」。<br>{A}、{B} 代表句中变化的内容；替换词写哪个，就保留哪部分。识别模板中，每个占位符只能出现一次。<br>也可写「{A}极了」→「很{A}」，将 A 设为“单个词”。</p></details>${this.ruleOptions(r)}<div class="tr-form-actions">${button('取消', 'data-action="cancel-rule"')}<button type="submit" class="tr-primary">保存规则</button></div></form>`;
+  }
+  captureFields(r) {
+    const keys = [...new Set((r.find.match(/\{[A-Z]\}/g) ?? []).map(k => k[1]))];
+    if (r.kind !== 'pattern' || !keys.length) return '<p class="tr-meta">选择句式模板并填写 {A}、{B} 等占位符后，可设置各部分的匹配条件。</p>';
+    return keys.map(key => {
+      const c = r.captures?.[key] ?? { type: 'text', words: [] };
+      return `<div class="tr-capture"><label class="tr-field">${key} 匹配什么<select data-capture-key="${key}" data-capture-field="type">${Object.entries(CAPTURE_TYPES).map(([value, title]) => `<option value="${value}" ${c.type === value ? 'selected' : ''}>${title}</option>`).join('')}</select></label><label class="tr-field">${key} 的允许词（可选）<input data-capture-key="${key}" data-capture-field="words" value="${esc(Array.isArray(c.words) ? c.words.join('，') : c.words ?? '')}" placeholder="例如：高兴，开心"></label></div>`;
+    }).join('') + '<p class="tr-meta">单个词每次取分词得到的一项，可在试验区查看范围；词性限制可选。允许词可补充词性判断；选择“仅指定词语”时只按名单匹配。词性来自词典，可能有歧义。</p>';
+  }
+  ruleOptions(r) {
+    const text = value => esc(Array.isArray(value) ? value.join('，') : value ?? '');
+    return `<div id="tr-captures">${this.captureFields(r)}</div><label class="tr-field">任意文字的范围<select data-rule-field="boundary"><option value="clause" ${r.boundary === 'clause' ? 'selected' : ''}>不跨逗号</option><option value="sentence" ${r.boundary !== 'clause' ? 'selected' : ''}>可跨逗号，不跨句末和换行</option></select></label><label class="tr-field">删除时的标点处理<select data-rule-field="punctuation"><option value="none" ${r.punctuation !== 'following-comma' ? 'selected' : ''}>只删除匹配内容</option><option value="following-comma" ${r.punctuation === 'following-comma' ? 'selected' : ''}>同时删除紧随其后的一个逗号</option></select></label><p class="tr-meta">仅在删除时去掉逗号；替换为文字时保留逗号。前面的逗号、句号和换行保留。</p><label class="tr-check"><input type="checkbox" data-rule-field="reviewAtEnd" ${(r.reviewAtEnd ?? (r.kind === 'pattern' && r.find === '像{A}一样')) ? 'checked' : ''}>句末命中时，默认删除改为待改</label><details><summary>前后条件与优先级</summary><label class="tr-field">前面紧接哪些词才处理<input data-rule-field="before" value="${text(r.before)}" placeholder="留空表示不限"></label><label class="tr-field">后面紧接哪些词才处理<input data-rule-field="after" value="${text(r.after)}" placeholder="例如：渴望，恐惧，疲惫"></label><label class="tr-field">前面紧接这些词时跳过<input data-rule-field="notBefore" value="${text(r.notBefore)}" placeholder="例如：不，很，非常"></label><label class="tr-field">遇到这些词组时跳过<input data-rule-field="exceptions" value="${text(r.exceptions)}" placeholder="仅跳过与匹配位置相交的词组"></label><label class="tr-field">优先级<input type="number" min="0" max="100" data-rule-field="priority" value="${esc(r.priority ?? 0)}"></label><p class="tr-meta">条件词用逗号分隔。数字越大越优先；相同优先级的重叠规则标为待改。</p></details><details><summary>试验这条规则</summary><label class="tr-field">测试文字<textarea data-rule-field="sample" maxlength="8000" placeholder="他高兴极了。">${esc(r.sample ?? '')}</textarea></label>${button('查看修改结果', 'data-action="preview-rule"')}<div id="tr-rule-preview" aria-live="polite"></div></details>`;
+  }
+  draftRule() {
+    const draft = this.ruleDrafts.get(this.ruleId), old = this.c.settings().rules.find(r => r.id === this.ruleId);
+    return validateRule({ ...draft, id: old?.id, values: parseRuleValues(draft.valuesText), enabled: old?.enabled ?? true });
+  }
+  async previewRule() {
+    const rule = this.draftRule(), draft = this.ruleDrafts.get(this.ruleId), sample = draft.sample ?? '';
+    if (!sample.trim()) throw new Error('请先填写测试文字。');
+    if (sample.length > 8000) throw new Error('测试文字最多 8000 字。');
+    const target = this.dialog.querySelector('#tr-rule-preview');
+    const inputSnapshot = JSON.stringify(draft);
+    target.textContent = '正在检测…';
+    try {
+      if (needsLanguage([rule])) await ensureLanguage();
+      if (!target.isConnected || JSON.stringify(draft) !== inputSnapshot) return;
+      const round = scan(sample, [rule], { random: () => 0 });
+      target.innerHTML = round.groups.map(g => `<p class="tr-sentence">${inlineHTML(g)}</p><p class="tr-meta">${g.matches.map(m => Object.entries(m.captures).map(([key, value]) => `${esc(key)} = ${esc(value)}`).join('；')).filter(Boolean).join('<br>')}</p>`).join('') || '<p class="tr-meta">没有命中这条规则。</p>';
+    } catch (error) { target.textContent = error.message; }
   }
   slider(id, label, value) {
     return `<label class="tr-mini-slider" for="${id}"><span>${label}<output id="${id}-value">${value}%</output></span><input type="range" id="${id}" min="0" max="100" step="5" value="${value}" style="--tr-range-fill:${value}%"></label>`;
@@ -288,6 +319,7 @@ export class RevisionUI {
       this.drafts.delete(this.edit?.key); this.edit = null; this.render(); await this.c.persistDraft(); return;
     }
     switch (data.action) {
+      case 'preview-rule': await this.previewRule(); break;
       case 'add-pair':
         if (this.scopeDraft.excludeRules.length >= 50) throw new Error('内容排除最多设置 50 条。');
         this.scopeDraft.excludeRules.push({ start: '', end: '' }); this.render();
@@ -313,7 +345,14 @@ export class RevisionUI {
     }
   }
   input(e) {
+    if (e.target.dataset.captureKey) {
+      const draft = this.ruleDrafts.get(this.ruleId), key = e.target.dataset.captureKey;
+      draft.captures ??= {}; draft.captures[key] ??= { type: 'text', words: [] };
+      draft.captures[key][e.target.dataset.captureField] = e.target.value;
+    }
     if (e.target.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[e.target.dataset.ruleField] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    if (['find', 'kind'].includes(e.target.dataset.ruleField)) this.dialog.querySelector('#tr-captures').innerHTML = this.captureFields(this.ruleDrafts.get(this.ruleId));
+    if (e.target.dataset.ruleField || e.target.dataset.captureKey) { const preview = this.dialog.querySelector('#tr-rule-preview'); if (preview) preview.textContent = ''; }
     if (e.target.id === 'tr-extract-tags') this.scopeDraft.extractTags = e.target.value;
     if (e.target.dataset.boundary) this.scopeDraft.excludeRules[Number(e.target.dataset.pair)][e.target.dataset.boundary] = e.target.value;
     if (e.target.id === 'tr-edit' && this.edit) this.edit.text = e.target.value;
@@ -332,6 +371,7 @@ export class RevisionUI {
   }
   async change(e) {
     const el = e.target;
+    if (el.dataset.captureKey || el.dataset.ruleField) this.input(e);
     if (el.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[el.dataset.ruleField] = el.type === 'checkbox' ? el.checked : el.value;
     if (el.id === 'tr-launcher-color') { this.c.settings().launcherColor = el.value; this.launcherTheme(); this.c.saveSettings(); }
     if (el.dataset.scopeToggle) this.scopeDraft[el.dataset.scopeToggle] = el.checked;
@@ -345,11 +385,11 @@ export class RevisionUI {
   }
   submit(e) {
     if (e.target.id !== 'tr-rule-form') return;
-    const val = id => this.dialog.querySelector(`#${id}`).value;
     const old = this.c.settings().rules.find(r => r.id === this.ruleId);
-    const rule = validateRule({ id: old?.id, find: val('tr-find'), values: parseRuleValues(val('tr-values')), kind: val('tr-kind'), action: val('tr-action'), remove: this.dialog.querySelector('#tr-remove').checked, enabled: old?.enabled ?? true });
+    const rule = this.draftRule();
     const rules = this.c.settings().rules;
-    if (rules.some(r => r.id !== rule.id && r.find === rule.find && r.kind === rule.kind)) throw new Error('已经有相同的检测规则。');
+    const signature = r => { const { id, enabled, ...content } = validateRule(r); return JSON.stringify(content); };
+    if (rules.some(r => r.id !== rule.id && signature(r) === signature(rule))) throw new Error('已经有完全相同的规则。');
     if (old) rules.splice(rules.indexOf(old), 1, rule);
     else { if (rules.length >= 200) throw new Error('最多保存 200 条规则。'); rules.push(rule); }
     this.c.saveSettings(); this.ruleDrafts.delete(this.ruleId); this.ruleId = null; this.screen = 'rules'; this.render(); this.say('规则已保存，下次检测生效。');

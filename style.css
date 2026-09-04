@@ -156,6 +156,9 @@
 #tr-root .tr-rule{gap:8px}
 #tr-root .tr-rule-editor{padding:2px 10px 8px;margin-bottom:8px;border-radius:8px;background:color-mix(in srgb,var(--tr-soft) 45%,transparent)}
 #tr-root .tr-rule-editor .tr-field{margin:10px 0}
+#tr-root .tr-capture{padding:2px 10px;border-left:2px solid var(--tr-border);margin:10px 0}
+#tr-root #tr-rule-preview{overflow-wrap:anywhere;white-space:pre-wrap}
+#tr-root #tr-rule-preview .tr-sentence{font-size:15px}
 #tr-root .tr-field-heading{display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
 #tr-root .tr-field-heading .tr-meta{display:inline;margin:0}
 #tr-root .tr-rule-editor textarea{min-height:64px;height:64px;max-height:180px}

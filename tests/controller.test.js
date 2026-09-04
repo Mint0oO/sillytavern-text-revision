@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RevisionController, KEY, verifyChatSave } from '../controller.js';
+import { DEFAULT_RULES, ENGINE_VERSION } from '../engine.js';
 
 function fixture() {
   let disk, fails = false, renders = 0;
@@ -116,4 +117,63 @@ test('removes the retired template once, preserves other rules and keeps launche
   s.launcherColor = 'blue'; s.launcherTransparency = 45;
   assert.equal(f.ctl.settings().launcherColor, 'blue');
   assert.equal(f.ctl.settings().launcherTransparency, 45);
+});
+
+test('default rule upgrade adds word segmentation once and preserves customized/disabled rules', () => {
+  const f = fixture();
+  const old = structuredClone(DEFAULT_RULES.slice(0, -1));
+  delete old[3].punctuation; delete old[3].boundary; old[3].enabled = false;
+  f.ctx.extensionSettings[KEY] = { rules: old, ruleDefaultsVersion: 1 };
+  let settings = f.ctl.settings();
+  assert.equal(settings.rules[3].punctuation, 'following-comma');
+  assert.equal(settings.rules[3].enabled, false);
+  assert.equal(settings.rules.at(-1).find, '{A}极了');
+  settings.rules.pop();
+  assert.equal(f.ctl.settings().rules.length, 5);
+  const customized = fixture();
+  old[3].values = ['小心地']; delete old[3].punctuation;
+  customized.ctx.extensionSettings[KEY] = { rules: old, ruleDefaultsVersion: 1 };
+  assert.equal(customized.ctl.settings().rules[3].punctuation, undefined);
+});
+
+test('language initialization cannot attach a stale scan after chat, text, swipe or settings changes', async () => {
+  for (const mutate of [
+    f => { f.ctx.chatId = 'other'; }, f => { f.ctx.chat[0].mes = '新的回复'; },
+    f => { f.ctx.chat[0].swipe_id = 0; }, f => { f.ctl.settings().rules[0].enabled = false; },
+  ]) {
+    const f = fixture(); let release;
+    f.ctl.prepareLanguage = () => new Promise(resolve => { release = resolve; });
+    const pending = f.ctl.detect(); mutate(f); release();
+    await assert.rejects(pending, /已变化/);
+    assert.equal(f.ctl.history().length, 0);
+  }
+});
+
+test('language load failure preserves chat and old engine rounds require fresh detection', async () => {
+  const f = fixture(), before = structuredClone(f.ctx.chat);
+  f.ctl.prepareLanguage = async () => { throw new Error('加载失败'); };
+  await assert.rejects(f.ctl.detect(), /加载失败/);
+  assert.deepEqual(f.ctx.chat, before);
+  const good = fixture(), r = await good.ctl.detect();
+  assert.equal(r.engineVersion, ENGINE_VERSION); delete r.engineVersion;
+  assert.equal(good.ctl.editable(r), false);
+  const fresh = await good.ctl.detect(0, { auto: true });
+  assert.ok(fresh); assert.equal(fresh.engineVersion, ENGINE_VERSION);
+});
+
+test('word and comma revisions persist through apply, reload and undo', async () => {
+  const f = fixture(), source = '他高兴极了。然后像个新兵一样，贴着墙根走。';
+  f.ctx.chat[0].mes = source; f.ctx.chat[0].swipes[1] = source;
+  const r = await f.ctl.detect(); await f.ctl.commit(r);
+  assert.equal(f.disk()[0].mes, '他很高兴。然后贴着墙根走。');
+  const reloaded = new RevisionController(() => f.ctx, f.ctl.verifySave);
+  await reloaded.commit(reloaded.current(), { undo: true });
+  assert.equal(f.disk()[0].mes, source);
+});
+
+test('new rule settings trigger automatic redetection even when the original text did not change', async () => {
+  const f = fixture(), first = await f.ctl.detect();
+  f.ctl.settings().rules[0].enabled = false;
+  const second = await f.ctl.detect(0, { auto: true });
+  assert.equal(first.count, 2); assert.equal(second.count, 1);
 });

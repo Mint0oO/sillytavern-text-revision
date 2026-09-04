@@ -1,4 +1,5 @@
-import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, scan, applySelected, ready, newId, normalizeScope, scopeKey } from './engine.js';
+import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, ENGINE_VERSION, needsLanguage, scan, applySelected, ready, newId, normalizeScope, scopeKey } from './engine.js';
+import { ensureLanguage } from './language.js';
 
 export const KEY = 'text_revision';
 export const clone = value => structuredClone(value);
@@ -7,12 +8,14 @@ export const swipeId = m => m.swipe_id ?? 0;
 export const isReply = m => m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim();
 
 export class RevisionController {
-  constructor(getContext, verifySave) {
+  constructor(getContext, verifySave, prepareLanguage = ensureLanguage) {
     this.context = getContext;
     this.verifySave = verifySave;
     this.busy = false;
     this.onChange = () => {};
     this.selectedId = null;
+    this.prepareLanguage = prepareLanguage;
+    this.detectionSequence = 0;
   }
   settings() {
     const c = this.context();
@@ -22,6 +25,15 @@ export class RevisionController {
     if (!s.ruleDefaultsVersion) {
       s.rules = s.rules.filter(r => !(r.kind === 'pattern' && r.find === '像{A}的孤狼一样'));
       s.ruleDefaultsVersion = 1;
+    }
+    if (s.ruleDefaultsVersion < 2) {
+      // Upgrade only recognizable built-ins; keep user-written rules and disabled states.
+      const simile = s.rules.find(r => r.id === 'simile' && r.kind === 'pattern' && r.find === '像{A}一样' && r.remove && r.action === 'delete' && !r.values?.length);
+      if (simile) { simile.punctuation ??= 'following-comma'; simile.boundary ??= 'clause'; }
+      if (s.rules.some(r => ['very', 'simile', 'extreme', 'contrast'].includes(r.id)) && !s.rules.some(r => r.find === '{A}极了')) {
+        s.rules.push(clone(DEFAULT_RULES.find(r => r.id === 'word-extreme')));
+      }
+      s.ruleDefaultsVersion = 2;
     }
     s.theme ??= 'light';
     s.appearance ??= 'minimal';
@@ -63,7 +75,7 @@ export class RevisionController {
     return m;
   }
   editable(round) {
-    try { this.target(round); return round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
+    try { this.target(round); return round.engineVersion === ENGINE_VERSION && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
     catch { return false; }
   }
   async detect(messageId = this.latestReply(), { auto = false } = {}) {
@@ -71,17 +83,25 @@ export class RevisionController {
     const c = this.context(), m = c.chat[messageId];
     if (!c.chatId && !c.getCurrentChatId?.()) throw new Error('请先打开并保存一个聊天。');
     if (!isReply(m)) throw new Error('当前没有可检测的 AI 回复。');
+    const sequence = ++this.detectionSequence;
+    const settings = this.settings(), rules = clone(settings.rules), scope = normalizeScope(settings);
+    const snapshot = { key: chatKey(c), text: m.mes, swipe: swipeId(m), rules: JSON.stringify(rules), history: c.chatMetadata[KEY] };
+    if (needsLanguage(rules)) await this.prepareLanguage();
+    const now = this.context();
+    if (sequence !== this.detectionSequence || chatKey(now) !== snapshot.key || now.chat[messageId] !== m || m.mes !== snapshot.text || swipeId(m) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || JSON.stringify(this.settings().rules) !== snapshot.rules || now.chatMetadata[KEY] !== snapshot.history) {
+      throw new Error('加载分词组件时正文或设置已变化，请重新检测。');
+    }
+    this.assertIdle();
     const history = this.history();
-    const scope = normalizeScope(this.settings());
     const previous = history.findLast(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m));
-    if (auto && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) {
+    if (auto && previous?.engineVersion === ENGINE_VERSION && previous.rulesKey === snapshot.rules && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) {
       if (this.selectedId !== previous.id) { this.selectedId = previous.id; this.onChange(); }
       return null;
     }
-    const round = scan(m.mes, this.settings().rules, { scope });
+    const round = scan(snapshot.text, rules, { scope });
     m.extra ??= {};
     m.extra[KEY] ??= { id: newId() };
-    Object.assign(round, { chatKey: chatKey(c), messageId, messageUid: m.extra[KEY].id, swipeId: swipeId(m), number: (c.chatMetadata[KEY]?.total ?? 0) + 1 });
+    Object.assign(round, { rulesKey: snapshot.rules, chatKey: chatKey(c), messageId, messageUid: m.extra[KEY].id, swipeId: swipeId(m), number: (c.chatMetadata[KEY]?.total ?? 0) + 1 });
     const rounds = [...history, round];
     // Keep the complete latest round and bounded historical snapshots per chat.
     while (rounds.length > 30 || rounds.length > 1 && JSON.stringify(rounds).length > 4000000) rounds.shift();
