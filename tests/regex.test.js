@@ -61,15 +61,15 @@ test('auto edits only eligible occurrences inside mixed sentences; conflict rema
   assert.equal(conflict.expected, conflict.base);
 });
 
-test('editor restores POS and preserves regex commas, groups, macros and batch alternation', () => {
+test('editor preserves old punctuation and batches support random candidates', () => {
   const original = rule('/死死地?/g', ['轻轻, 缓缓{{char}}'], { execution: 'auto', category: 'sentence' });
-  assert.deepEqual(simpleRule(createRuleDraft(original), original), original);
+  assert.deepEqual(simpleRule(createRuleDraft(original), original).values, original.values);
   const batch = bulkRules('/这些|那些/g\t花园里的, 那些\n/死死地?/g\t{{random::轻轻::缓缓}}', { mode: 'regex', action: 'replace' });
-  assert.equal(batch.length, 2); assert.deepEqual(batch[0].values, ['花园里的, 那些']);
-  assert.throws(() => bulkRules('甲\t乙\n坏行', { action: 'replace' }), /第 2 行/);
-  const draft = createRuleDraft(); draft.find = '{A}极了';
+  assert.equal(batch.length, 2); assert.deepEqual(batch[0].values, ['花园里的', '那些']);
+  assert.throws(() => bulkRules('甲\t乙\n[', { action: 'replace' }), /第 2 行/);
+  const draft = createRuleDraft(); draft.find = '死死地?';
   const saved = simpleRule(draft), html = renderRuleForm(createRuleDraft(saved));
-  assert.match(html, /单个形容词/); assert.match(html, /附加条件/);
+  assert.match(html, /替换为/); assert.doesNotMatch(html, /附加条件/);
 });
 
 test('logs use the last applied text when a saved occurrence is edited again', async () => {

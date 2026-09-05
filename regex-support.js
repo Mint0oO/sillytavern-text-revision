@@ -1,11 +1,16 @@
 // Use the platform RegExp implementation and SillyTavern's macro resolver.
 // Only configured, read-only macros are expanded; captured chat text is never evaluated.
-export function parseRegex(find) {
+export function parseRegex(find, simple = false) {
   let source = find, flags = 'g';
   if (find.startsWith('/')) {
     const end = find.lastIndexOf('/');
     if (end < 1) throw new Error('正则请写成 /表达式/g，或直接填写表达式。');
     source = find.slice(1, end); flags = find.slice(end + 1);
+  } else if (simple && /[,\r\n]/.test(find) && !/[\\^$.*+?()[\]{}|]/.test(find)) {
+    // Only plain word lists get this shortcut; regex punctuation stays intact.
+    const words = [...new Set(find.split(/[,\r\n]+/).map(v => v.trim()).filter(Boolean))];
+    if (!words.length) throw new Error('请填写要查找的内容。');
+    source = words.sort((a, b) => b.length - a.length).join('|');
   }
   try { return new RegExp(source, flags); }
   catch (error) { throw new Error(`正则表达式无效：${error.message}`); }

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RevisionController, KEY, verifyChatSave } from '../controller.js';
 import { DEFAULT_RULES, ENGINE_VERSION, validateRule } from '../engine.js';
+import { createRuleDraft, simpleRule } from '../rule-editor.js';
 
 function fixture() {
   let disk, fails = false, renders = 0;
@@ -9,6 +10,37 @@ function fixture() {
   const ctl = new RevisionController(() => ctx, async (c, r, text) => { assert.equal(disk[r.messageId].mes, text, 'server did not persist content'); });
   return { ctx, ctl, disk: () => disk, fail: () => { fails = true; }, renders: () => renders };
 }
+
+test('fresh settings use simple regex rules without legacy template controls', () => {
+  const settings = fixture().ctl.settings();
+  assert.equal(settings.ruleExecution, 'review');
+  assert.ok(settings.rules.length > 0);
+  assert.ok(settings.rules.every(r => r.editorVersion === 1 && r.kind === 'regex' && r.execution === 'inherit'));
+});
+
+test('shared execution changes invalidate old suggestions and automatic saves survive reload and undo', async () => {
+  const f = fixture();
+  f.ctl.settings().rules = [simpleRule({ ...createRuleDraft(), find: '极其', valuesText: '十分, 很' })];
+  const first = await f.ctl.detect();
+  f.ctl.settings().ruleExecution = 'auto';
+  assert.equal(f.ctl.editable(first), false);
+  await assert.rejects(f.ctl.commit(first));
+  const round = await f.ctl.detect(0, { auto: true });
+  await f.ctl.commit(round, { automatic: true });
+  assert.match(f.disk()[0].mes, /^你(?:十分|很)疲惫/);
+  assert.equal(round.log[0].automatic, true);
+  const reload = new RevisionController(() => f.ctx, f.ctl.verifySave);
+  await reload.commit(reload.current(), { undo: true });
+  assert.equal(f.disk()[0].mes, '你极其疲惫。空位极具吸引力。');
+});
+
+test('a shared execution change during matching rejects the stale scan', async () => {
+  const f = fixture();
+  const pending = f.ctl.detect();
+  f.ctl.settings().ruleExecution = 'auto';
+  await assert.rejects(pending, /已变化/);
+  assert.equal(f.ctl.history().length, 0);
+});
 test('confirmed changes write saved chat and selected swipe; reload and undo retain original text', async () => {
   const f = fixture(); const r = await f.ctl.detect();
   r.groups[1].selected = false;
@@ -142,6 +174,7 @@ test('language initialization cannot attach a stale scan after chat, text, swipe
     f => { f.ctx.chat[0].swipe_id = 0; }, f => { f.ctl.settings().rules[0].enabled = false; },
   ]) {
     const f = fixture(); let release;
+    f.ctl.settings().rules = structuredClone(DEFAULT_RULES);
     f.ctl.prepareLanguage = () => new Promise(resolve => { release = resolve; });
     const pending = f.ctl.detect(); mutate(f); release();
     await assert.rejects(pending, /已变化/);
@@ -151,6 +184,7 @@ test('language initialization cannot attach a stale scan after chat, text, swipe
 
 test('language load failure preserves chat and old engine rounds require fresh detection', async () => {
   const f = fixture(), before = structuredClone(f.ctx.chat);
+  f.ctl.settings().rules = structuredClone(DEFAULT_RULES);
   f.ctl.prepareLanguage = async () => { throw new Error('加载失败'); };
   await assert.rejects(f.ctl.detect(), /加载失败/);
   assert.deepEqual(f.ctx.chat, before);
@@ -163,6 +197,7 @@ test('language load failure preserves chat and old engine rounds require fresh d
 
 test('word and comma revisions persist through apply, reload and undo', async () => {
   const f = fixture(), source = '他高兴极了。然后像个新兵一样，贴着墙根走。';
+  f.ctl.settings().rules = structuredClone(DEFAULT_RULES);
   f.ctx.chat[0].mes = source; f.ctx.chat[0].swipes[1] = source;
   const r = await f.ctl.detect(); await f.ctl.commit(r);
   assert.equal(f.disk()[0].mes, '他很高兴。然后贴着墙根走。');

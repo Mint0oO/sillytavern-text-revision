@@ -20,7 +20,7 @@ export async function regexMatches(text, rules, scope, { timeout = 3000 } = {}) 
 export async function scanPrepared(text, rules, options = {}) {
   if (typeof text !== 'string' || text.length > LIMITS.text) throw new Error('单条回复超过 20 万字，暂不检测。');
   if (rules.length > LIMITS.rules) throw new Error('最多启用 200 条规则。');
-  rules = rules.map(validateRule);
+  rules = rules.map(validateRule).map(rule => rule.execution === 'inherit' ? { ...rule, execution: options.executionDefault === 'auto' ? 'auto' : 'review' } : rule);
   const regexRules = rules.filter(r => r.enabled && r.kind === 'regex');
   const found = regexRules.length ? await regexMatches(text, regexRules, options.scope, options) : {};
   let expandedLength = 0;

@@ -6,11 +6,12 @@ export function collectRegex({ text, rules, scope }) {
   const result = {};
   let count = 0, outputLength = 0;
   for (const [start, end] of textRanges(text, scope).ranges) {
-    for (const sentence of sentenceSpans(text.slice(start, end))) {
-      if (sentence.text.length > LIMITS.sentence) throw new Error('存在超过 8000 字的连续句子，请先分段。');
-      const byRule = result[start + sentence.index] = {};
-      for (const rule of rules) {
-        const regex = parseRegex(rule.find), matches = byRule[rule.id] = [];
+    for (const rule of rules) {
+      const spans = rule.editorVersion === 1 ? [{ index: 0, text: text.slice(start, end) }] : sentenceSpans(text.slice(start, end));
+      for (const sentence of spans) {
+        if (!rule.editorVersion && sentence.text.length > LIMITS.sentence) throw new Error('存在超过 8000 字的连续句子，请先分段。');
+        const byRule = result[start + sentence.index] ??= {};
+        const regex = parseRegex(rule.find, rule.editorVersion === 1), matches = byRule[rule.id] = [];
         const templates = rule.values.map(replacementParts);
         // sticky replacement on the original segment preserves lookaround and $1 semantics.
         const one = new RegExp(regex.source, regex.flags.replace(/[gy]/g, '') + 'y');
@@ -28,7 +29,7 @@ export function collectRegex({ text, rules, scope }) {
             if (expanded.length > 8000 || outputLength > 4000000) throw new Error('正则替换内容过多，请缩小规则范围。');
             return { text: expanded };
           }));
-          matches.push({ text: m[0], index: m.index, options, captures: Object.fromEntries(m.slice(1).map((v, i) => [String(i + 1), v ?? ''])) });
+          matches.push({ text: m[0], index: m.index, contextStart: start + sentence.index, contextEnd: start + sentence.index + sentence.text.length, options, captures: Object.fromEntries(m.slice(1).map((v, i) => [String(i + 1), v ?? ''])) });
           if (!regex.global) break;
         }
       }

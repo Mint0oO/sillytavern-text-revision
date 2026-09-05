@@ -1,8 +1,8 @@
 // Pure text operations: no chat access, network requests, or DOM writes.
 import { analyzeWords, acceptsWord, CAPTURE_TYPES } from './language.js';
-import { sentenceSpans } from './sentences.js';
+import { sentenceSpans, revisionSpans } from './sentences.js';
 import { parseRegex, replacementParts } from './regex-support.js';
-export const ENGINE_VERSION = 4;
+export const ENGINE_VERSION = 5;
 export const DEFAULT_RULES = [
   { id: 'very', find: '极其', kind: 'word', values: ['十分', '非常'], remove: true, action: 'delete', enabled: true },
   { id: 'possess', find: '极具', kind: 'word', values: ['很有', '有'], remove: false, action: 'replace', enabled: true },
@@ -14,7 +14,7 @@ export const DEFAULT_RULES = [
 export const LIMITS = { text: 200000, sentence: 8000, rules: 200, matches: 1000 };
 // Phones may access a LAN tavern over HTTP, where crypto.randomUUID is absent.
 export const newId = () => globalThis.crypto?.randomUUID?.() ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}-${Math.random().toString(36).slice(2)}`;
-const escapeRE = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+export const escapeRE = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 export const escapeHTML = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // Comma-separated candidates; quote candidates containing literal commas or quotes.
@@ -41,9 +41,9 @@ export function parseRuleValues(text) {
 
 export function validateRule(rule) {
   const find = String(rule.find ?? '').trim();
-  if (!find || find.length > 256) throw new Error('识别内容需要 1–256 个字符。');
+  if (!find || find.length > (rule.kind === 'regex' ? 8000 : 256)) throw new Error('查找内容不能为空；正则最多 8000 字，旧模板最多 256 字。');
   const kind = ['pattern', 'regex'].includes(rule.kind) ? rule.kind : 'word';
-  if (kind === 'regex') parseRegex(find);
+  if (kind === 'regex') parseRegex(find, rule.editorVersion === 1);
   const keys = kind === 'pattern' ? find.match(/\{[A-Z]\}/g) ?? [] : [];
   if (new Set(keys).size !== keys.length || find === keys[0] || keys.length > 4) throw new Error('句式需要固定文字，最多使用 4 个不重复的占位符（{A} 到 {Z}）。');
   if (kind === 'pattern' && /\{[A-Z]\}\{[A-Z]\}/.test(find)) throw new Error('两个占位符之间需要固定文字。');
@@ -57,7 +57,7 @@ export function validateRule(rule) {
   }
   if (keys.filter(key => captures[key[1]].type === 'text').length > 2) throw new Error('任意文字占位符最多使用两个，其他占位符请设置词性或指定词语。');
   if (kind === 'pattern' && /^\{[A-Z]\}/.test(find) && captures[find[1]].type === 'text') throw new Error('开头的占位符需要指定词性或词语，以免把主语一起替换。');
-  const values = [...new Set((Array.isArray(rule.values) ? rule.values : []).map(String).map(s => s.trim()).filter(Boolean))];
+  const values = [...new Set((Array.isArray(rule.values) ? rule.values : []).map(String).map(s => rule.editorVersion === 1 && rule.replacementMode === 'text' ? s : s.trim()).filter(s => s.length))];
   if (values.length > 100 || values.some(s => s.length > 1000)) throw new Error('每条规则最多 100 个候选，每个候选最多 1000 字。');
   if (kind === 'regex') values.forEach(replacementParts);
   if (kind === 'pattern' && values.some(v => (v.match(/\{[A-Z]\}/g) ?? []).some(k => !keys.includes(k)))) throw new Error('替换候选使用了识别句式中不存在的占位符。');
@@ -68,8 +68,9 @@ export function validateRule(rule) {
   const priority = Number(rule.priority ?? 0);
   if (!Number.isInteger(priority) || priority < 0 || priority > 100) throw new Error('优先级需要是 0–100 的整数，数字越大越优先。');
   return { id: String(rule.id || newId()), find, kind, values, remove, action, enabled: rule.enabled !== false, captures,
+    ...(rule.editorVersion === 1 && kind === 'regex' ? { editorVersion: 1, replacementMode: rule.replacementMode === 'text' ? 'text' : 'candidates' } : {}),
     category: ['word', 'sentence'].includes(rule.category) ? rule.category : kind === 'pattern' ? 'sentence' : 'word',
-    execution: rule.execution === 'auto' && action !== 'review' ? 'auto' : 'review',
+    execution: rule.editorVersion === 1 && rule.execution === 'inherit' ? 'inherit' : rule.execution === 'auto' && action !== 'review' ? 'auto' : 'review',
     punctuation: rule.punctuation === 'following-comma' ? rule.punctuation : 'none',
     boundary: rule.boundary === 'clause' ? 'clause' : 'sentence', priority,
     before: parseConditionWords(rule.before), after: parseConditionWords(rule.after), notBefore: parseConditionWords(rule.notBefore), exceptions: parseConditionWords(rule.exceptions),
@@ -246,11 +247,15 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
   if (rules.length > LIMITS.rules) throw new Error('最多启用 200 条规则。');
   const compiled = rules.map(validateRule).filter(r => r.enabled);
   const selection = textRanges(text, scope), groups = [];
+  const absoluteRegex = {};
+  for (const [base, byRule] of Object.entries(regexMatches ?? {})) for (const [ruleId, matches] of Object.entries(byRule)) {
+    (absoluteRegex[ruleId] ??= []).push(...matches.map(m => ({ ...m, index: Number(base) + m.index })));
+  }
+  const regexSpans = Object.values(absoluteRegex).flat();
   let count = 0;
   for (const [rangeStart, rangeEnd] of selection.ranges) {
-  for (const sentence of sentenceSpans(text.slice(rangeStart, rangeEnd))) {
-    sentence.index += rangeStart;
-    if (sentence.text.length > LIMITS.sentence) throw new Error('存在超过 8000 字的连续句子，请先分段。');
+  for (const sentence of revisionSpans(text, rangeStart, rangeEnd, regexSpans)) {
+    if (sentence.text.length > LIMITS.sentence) throw new Error('单个修订片段超过 8000 字，请缩小匹配范围或先分段。');
     let found = [];
     let tokens;
     for (const rule of compiled) {
@@ -260,14 +265,21 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
       const linguistic = needsLanguage([rule]);
       if (linguistic) tokens ??= analyze(sentence.text);
       const { regex, keys } = rule.kind === 'regex' ? { keys: [] } : compile(rule, tokens ?? []);
-      const occurrences = rule.kind === 'regex' ? (regexMatches[sentence.index]?.[rule.id] ?? []).map(m => Object.assign([m.text], m)) : sentence.text.matchAll(regex);
+      const occurrences = rule.kind === 'regex'
+        ? (absoluteRegex[rule.id] ?? []).filter(m => m.index >= sentence.index && m.index + m.text.length <= sentence.index + sentence.text.length).map(m => Object.assign([m.text], m, { index: m.index - sentence.index }))
+        : [...sentenceSpans(sentence.text)].flatMap(span => [...span.text.matchAll(regex)].map(m => {
+          m.index += span.index;
+          m.indices = m.indices.map(pair => pair?.map(at => at + span.index));
+          m.contextStart = sentence.index + span.index; m.contextEnd = m.contextStart + span.text.length;
+          return m;
+        }));
       for (const m of occurrences) {
         if (linguistic && (!tokens.some(t => t.start === m.index) || !tokens.some(t => t.end === m.index + m[0].length))) continue;
         if (keys.some((key, i) => {
           const condition = rule.captures[key[1]], [start, end] = m.indices[i + 1];
           return !['text', 'list'].includes(condition.type) && !tokens.some(t => t.start === start && t.end === end && acceptsWord(t, condition));
         })) continue;
-        const prefix = sentence.text.slice(0, m.index), suffix = sentence.text.slice(m.index + m[0].length);
+        const prefix = text.slice(m.contextStart ?? sentence.index, sentence.index + m.index), suffix = text.slice(sentence.index + m.index + m[0].length, m.contextEnd ?? sentence.index + sentence.text.length);
         if (rule.before.length && !rule.before.some(w => prefix.endsWith(w)) || rule.after.length && !rule.after.some(w => suffix.startsWith(w))) continue;
         if (rule.notBefore.some(w => prefix.endsWith(w))) continue;
         // Only exceptions intersecting this occurrence suppress it, not the whole sentence.

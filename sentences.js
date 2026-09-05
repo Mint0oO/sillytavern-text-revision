@@ -51,3 +51,20 @@ export function* sentenceSpans(text) {
     if (start < value.length) yield { index: line.index + start, text: value.slice(start) };
   }
 }
+
+// Match first, then group for review. A cross-sentence regex merges only the
+// sentences it touches; tags/excluded ranges are supplied as hard boundaries.
+export function* revisionSpans(text, start, end, matches = []) {
+  const spans = [...sentenceSpans(text.slice(start, end))].map(s => [start + s.index, start + s.index + s.text.length]);
+  spans.push(...matches.filter(m => m.index >= start && m.index + m.text.length <= end).map(m => [m.index, m.index + m.text.length]));
+  spans.sort((a, b) => a[0] - b[0] || b[1] - a[1]);
+  let current;
+  for (const span of spans) {
+    if (current && span[0] < current[1]) current[1] = Math.max(current[1], span[1]);
+    else {
+      if (current) yield { index: current[0], text: text.slice(...current) };
+      current = [...span];
+    }
+  }
+  if (current) yield { index: current[0], text: text.slice(...current) };
+}

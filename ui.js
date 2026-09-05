@@ -1,10 +1,10 @@
 import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, needsLanguage } from './engine.js';
 import { clone } from './controller.js';
 import { ensureLanguage } from './language.js';
-import { createRuleDraft, syncRuleDraft, simpleRule, clearExtraConditions, bulkRules } from './rule-editor.js';
+import { createRuleDraft, simpleRule, bulkRules } from './rule-editor.js';
 import { renderRulesView } from './rules-view.js';
 import { scanPrepared } from './scanner.js';
-import { renderRuleForm, renderCaptureFields } from './rule-form.js';
+import { renderRuleForm } from './rule-form.js';
 
 const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
 const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
@@ -17,8 +17,8 @@ export class RevisionUI {
     this.edit = null;
     this.drafts = new Map();
     this.ruleId = null;
-    this.ruleFilters = { category: '', action: '', search: '' };
-    this.bulkDraft = { text: '', mode: 'text', action: 'delete', category: 'word', execution: 'review' };
+    this.ruleFilters = { search: '' };
+    this.bulkDraft = { text: '' };
     this.ruleDrafts = new Map();
     this.historical = null;
     this.scopeDraft = null;
@@ -204,7 +204,7 @@ export class RevisionUI {
     return `<section class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''}">${content}${editable ? icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`) : ''}</section>`;
   }
   rulesView() {
-    this.body(renderRulesView(this.c.settings().rules, this.ruleFilters, this.ruleId, () => this.ruleForm(), this.bulkDraft));
+    this.body(renderRulesView(this.c.settings().rules, this.ruleFilters, this.ruleId, () => this.ruleForm(), this.bulkDraft, this.c.settings().ruleExecution));
   }
   ruleForm() {
     if (!this.ruleDrafts.has(this.ruleId)) this.ruleDrafts.set(this.ruleId, createRuleDraft(this.c.settings().rules.find(r => r.id === this.ruleId)));
@@ -214,15 +214,16 @@ export class RevisionUI {
     return simpleRule(this.ruleDrafts.get(this.ruleId), this.c.settings().rules.find(r => r.id === this.ruleId));
   }
   async previewRule() {
-    const rule = this.draftRule(), draft = this.ruleDrafts.get(this.ruleId), sample = draft.sample ?? '';
+    const draft = this.ruleDrafts.get(this.ruleId), sample = draft.sample ?? '';
     if (!sample.trim()) throw new Error('请先填写测试文字。');
     if (sample.length > 8000) throw new Error('测试文字最多 8000 字。');
     const target = this.dialog.querySelector('#tr-rule-preview');
     const inputSnapshot = JSON.stringify(draft);
     target.textContent = '正在检测…';
     try {
+      const rule = this.draftRule();
       if (needsLanguage([rule])) await ensureLanguage();
-      const round = await scanPrepared(sample, [rule], { random: () => 0, context: this.c.context() });
+      const round = await scanPrepared(sample, [rule], { context: this.c.context() });
       if (!target.isConnected || JSON.stringify(draft) !== inputSnapshot) return;
       target.innerHTML = round.groups.map(g => `<p class="tr-sentence">${inlineHTML(g)}</p><p class="tr-meta">${g.matches.map(m => Object.entries(m.captures).map(([key, value]) => `${esc(key)} = ${esc(value)}`).join('；')).filter(Boolean).join('<br>')}</p>`).join('') || '<p class="tr-meta">没有命中这条规则。</p>';
     } catch (error) { target.textContent = error.message; }
@@ -317,7 +318,6 @@ export class RevisionUI {
         if (rules.length + added.length > 200) throw new Error('添加后超过 200 条规则，请减少数量。');
         rules.push(...added); this.c.saveSettings(); this.bulkDraft.text = ''; this.render(); this.say(`已添加 ${added.length} 条规则，重复项已跳过。`); break;
       }
-      case 'clear-rule-conditions': clearExtraConditions(this.ruleDrafts.get(this.ruleId)); this.render(); break;
       case 'preview-rule': await this.previewRule(); break;
       case 'add-pair':
         if (this.scopeDraft.excludeRules.length >= 50) throw new Error('内容排除最多设置 50 条。');
@@ -352,19 +352,13 @@ export class RevisionUI {
       if (key === 'search') input.setSelectionRange(position, position);
       return;
     }
-    if (e.target.dataset.captureKey) {
-      const draft = this.ruleDrafts.get(this.ruleId), key = e.target.dataset.captureKey;
-      draft.captures ??= {}; draft.captures[key] ??= { type: 'text', words: [] };
-      draft.captures[key][e.target.dataset.captureField] = e.target.value;
-    }
     if (e.target.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[e.target.dataset.ruleField] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-    if (e.target.dataset.ruleField === 'mode') { syncRuleDraft(this.ruleDrafts.get(this.ruleId)); this.render(); return; }
-    if (e.target.dataset.ruleField === 'find' || e.target.dataset.captureField === 'type') {
-      const draft = this.ruleDrafts.get(this.ruleId); syncRuleDraft(draft);
-      this.dialog.querySelector('#tr-captures').innerHTML = renderCaptureFields(draft);
+    if (e.target.dataset.ruleField === 'wholeReplacement') {
+      this.dialog.querySelector('#tr-replacement-help').textContent = e.target.checked
+        ? '整框是一份替换内容，标点、空格和换行原样保留。留空删除。'
+        : '英文逗号或换行分隔多个候选，每处随机选一个；只有一个就固定替换，留空删除。中文逗号保留。';
     }
-    if (e.target.dataset.ruleField === 'action') this.dialog.querySelector('#tr-replacements').hidden = e.target.value !== 'replace';
-    if (e.target.dataset.ruleField || e.target.dataset.captureKey) { const preview = this.dialog.querySelector('#tr-rule-preview'); if (preview) preview.textContent = ''; }
+    if (e.target.dataset.ruleField) { const preview = this.dialog.querySelector('#tr-rule-preview'); if (preview) preview.textContent = ''; }
     if (e.target.id === 'tr-extract-tags') this.scopeDraft.extractTags = e.target.value;
     if (e.target.dataset.boundary) this.scopeDraft.excludeRules[Number(e.target.dataset.pair)][e.target.dataset.boundary] = e.target.value;
     if (e.target.id === 'tr-edit' && this.edit) this.edit.text = e.target.value;
@@ -383,13 +377,14 @@ export class RevisionUI {
   }
   async change(e) {
     const el = e.target;
-    if (el.dataset.captureKey || el.dataset.ruleField || el.dataset.ruleFilter || el.dataset.bulkField) this.input(e);
+    if (el.dataset.ruleField || el.dataset.ruleFilter || el.dataset.bulkField) this.input(e);
     if (el.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[el.dataset.ruleField] = el.type === 'checkbox' ? el.checked : el.value;
     if (el.id === 'tr-launcher-color') { this.c.settings().launcherColor = el.value; this.launcherTheme(); this.c.saveSettings(); }
     if (el.dataset.scopeToggle) this.scopeDraft[el.dataset.scopeToggle] = el.checked;
     if (el.id === 'tr-launcher-enabled') { this.c.settings().showLauncher = el.checked; this.badge(); this.c.saveSettings(); }
     if (el.id === 'tr-palette') { this.c.settings().palette = el.value; this.theme(); this.c.saveSettings(); }
     if (el.id === 'tr-auto') { this.c.settings().autoScan = el.checked; this.c.saveSettings(); }
+    if (el.id === 'tr-rule-execution') { this.c.settings().ruleExecution = el.value; this.c.saveSettings(); }
     if (el.dataset.ruleEnabled) { this.c.settings().rules.find(r => r.id === el.dataset.ruleEnabled).enabled = el.checked; this.c.saveSettings(); }
     if (el.id === 'tr-appearance') { this.c.settings().appearance = el.value; this.theme(); this.c.saveSettings(); }
     if (el.hasAttribute('data-all')) { this.c.current().groups.filter(ready).forEach(g => { g.selected = el.checked; }); this.render(); }

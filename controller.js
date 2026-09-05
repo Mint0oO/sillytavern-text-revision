@@ -1,12 +1,14 @@
 import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, ENGINE_VERSION, needsLanguage, applySelected, ready, newId, normalizeScope, scopeKey } from './engine.js';
 import { ensureLanguage } from './language.js';
 import { scanPrepared } from './scanner.js';
+import { createRuleDraft, simpleRule } from './rule-editor.js';
 
 export const KEY = 'text_revision';
 export const clone = value => structuredClone(value);
 export const chatKey = c => JSON.stringify([c.groupId ?? null, c.characterId ?? null, c.chatId ?? c.getCurrentChatId?.()]);
 export const swipeId = m => m.swipe_id ?? 0;
 export const isReply = m => m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim();
+const rulesKey = settings => JSON.stringify([settings.ruleExecution ?? 'review', settings.rules]);
 
 export class RevisionController {
   constructor(getContext, verifySave, prepareLanguage = ensureLanguage) {
@@ -22,7 +24,10 @@ export class RevisionController {
     const c = this.context();
     c.extensionSettings[KEY] ??= {};
     const s = c.extensionSettings[KEY];
-    s.rules ??= clone(DEFAULT_RULES);
+    if (s.rules == null) {
+      s.rules = DEFAULT_RULES.filter(rule => rule.kind === 'word').map(rule => simpleRule(createRuleDraft(rule), rule));
+      s.ruleDefaultsVersion = 2;
+    }
     if (!s.ruleDefaultsVersion) {
       s.rules = s.rules.filter(r => !(r.kind === 'pattern' && r.find === '像{A}的孤狼一样'));
       s.ruleDefaultsVersion = 1;
@@ -41,6 +46,7 @@ export class RevisionController {
     s.palette ??= 'soft';
     s.transparency ??= 0;
     s.autoScan ??= true;
+    s.ruleExecution ??= 'review';
     s.showLauncher ??= false;
     s.launcherTransparency ??= 0;
     s.launcherColor ??= 'theme';
@@ -76,7 +82,7 @@ export class RevisionController {
     return m;
   }
   editable(round) {
-    try { this.target(round); return round.engineVersion === ENGINE_VERSION && round.rulesKey === JSON.stringify(this.settings().rules) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
+    try { this.target(round); return round.engineVersion === ENGINE_VERSION && round.rulesKey === rulesKey(this.settings()) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
     catch { return false; }
   }
   async detect(messageId = this.latestReply(), { auto = false } = {}) {
@@ -86,7 +92,7 @@ export class RevisionController {
     if (!isReply(m)) throw new Error('当前没有可检测的 AI 回复。');
     const sequence = ++this.detectionSequence;
     const settings = this.settings(), rules = clone(settings.rules), scope = normalizeScope(settings);
-    const snapshot = { key: chatKey(c), text: m.mes, swipe: swipeId(m), rules: JSON.stringify(rules), history: c.chatMetadata[KEY] };
+    const snapshot = { key: chatKey(c), text: m.mes, swipe: swipeId(m), rules: rulesKey(settings), history: c.chatMetadata[KEY] };
     const history = this.history();
     const previous = history.findLast(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m));
     if (auto && previous?.engineVersion === ENGINE_VERSION && previous.rulesKey === snapshot.rules && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) {
@@ -94,9 +100,9 @@ export class RevisionController {
       return null;
     }
     if (needsLanguage(rules)) await this.prepareLanguage();
-    const round = await scanPrepared(snapshot.text, rules, { scope, context: c });
+    const round = await scanPrepared(snapshot.text, rules, { scope, context: c, executionDefault: settings.ruleExecution });
     const now = this.context();
-    if (sequence !== this.detectionSequence || chatKey(now) !== snapshot.key || now.chat[messageId] !== m || m.mes !== snapshot.text || swipeId(m) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || JSON.stringify(this.settings().rules) !== snapshot.rules || now.chatMetadata[KEY] !== snapshot.history) {
+    if (sequence !== this.detectionSequence || chatKey(now) !== snapshot.key || now.chat[messageId] !== m || m.mes !== snapshot.text || swipeId(m) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || rulesKey(this.settings()) !== snapshot.rules || now.chatMetadata[KEY] !== snapshot.history) {
       throw new Error('检测期间正文或设置已变化，请重新检测。');
     }
     this.assertIdle();
