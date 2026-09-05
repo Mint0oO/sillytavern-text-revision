@@ -28,6 +28,15 @@ export class RevisionUI {
     this.dialog.setAttribute('aria-label', '词句修订');
     this.dialog.innerHTML = '<div class="tr-shell"><header class="tr-head"></header><main class="tr-main"></main><div class="tr-status" role="status" aria-live="polite"></div><footer class="tr-foot"></footer></div>';
     document.body.append(this.dialog);
+    // New-rule editor lives in its own nested modal instead of the rules list.
+    this.ruleModal = document.createElement('dialog');
+    this.ruleModal.id = 'tr-rule-modal';
+    this.ruleModal.innerHTML = `<div class="tr-modal-shell"><header class="tr-modal-head"><h3>新建规则</h3>${icon('xmark', '关闭新建规则', 'data-action="cancel-rule"')}</header><div class="tr-modal-body"></div></div>`;
+    this.dialog.append(this.ruleModal);
+    this.ruleModal.addEventListener('close', () => {
+      this.ruleModal.querySelector('.tr-modal-body').innerHTML = '';
+      if (this.ruleId === 'new') { this.ruleDrafts.delete('new'); this.ruleId = null; }
+    });
     this.launcher = document.createElement('button');
     this.launcher.id = 'tr-launcher';
     this.launcher.type = 'button';
@@ -157,8 +166,9 @@ export class RevisionUI {
     this.dialog.style.setProperty('--tr-alpha', String(1 - s.transparency / 100));
     this.dialog.style.setProperty('--tr-fill', `${100 - s.transparency}%`);
     this.launcher.dataset.theme = s.theme;
-    this.dialog.dataset.appearance = s.appearance;
-    this.launcher.dataset.appearance = s.appearance;
+    const appearance = s.appearanceEnabled === false ? null : s.appearance;
+    if (appearance) { this.dialog.dataset.appearance = appearance; this.launcher.dataset.appearance = appearance; }
+    else { delete this.dialog.dataset.appearance; delete this.launcher.dataset.appearance; }
     this.launcherTheme();
   }
   render() {
@@ -210,6 +220,13 @@ export class RevisionUI {
     if (!this.ruleDrafts.has(this.ruleId)) this.ruleDrafts.set(this.ruleId, createRuleDraft(this.c.settings().rules.find(r => r.id === this.ruleId)));
     return renderRuleForm(this.ruleDrafts.get(this.ruleId));
   }
+  openRuleModal() {
+    this.ruleId = 'new';
+    if (!this.ruleDrafts.has('new')) this.ruleDrafts.set('new', createRuleDraft());
+    this.ruleModal.querySelector('.tr-modal-body').innerHTML = renderRuleForm(this.ruleDrafts.get('new'));
+    if (!this.ruleModal.open) this.ruleModal.showModal();
+    this.ruleModal.querySelector('#tr-find')?.focus();
+  }
   draftRule() {
     return simpleRule(this.ruleDrafts.get(this.ruleId), this.c.settings().rules.find(r => r.id === this.ruleId));
   }
@@ -233,7 +250,7 @@ export class RevisionUI {
   }
   settingsView() {
     const s = this.c.settings();
-    this.body(`<label class="tr-field">界面美化<select id="tr-appearance">${[['minimal', '极简'], ['paper', '暖纸'], ['mist', '青雾'], ['lavender', '淡紫']].map(([v, t]) => `<option value="${v}" ${s.appearance === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label><div class="tr-mode-row"><div><span class="tr-label">显示模式</span><div class="tr-themes">${button('日间', `data-theme="light" aria-pressed="${s.theme === 'light'}"`)}${button('夜间', `data-theme="dark" aria-pressed="${s.theme === 'dark'}"`)}</div></div>${this.slider('tr-opacity', '背景透明度', s.transparency)}</div><label class="tr-field">修订配色<select id="tr-palette">${[['classic', '经典'], ['soft', '柔和'], ['vivid', '鲜明']].map(([v, t]) => `<option value="${v}" ${s.palette === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>${this.legend()}<p class="tr-sentence tr-preview">壁炉旁的空位<del>极具</del><ins>很有</ins>吸引力。<br>他的思绪<mark>像断了线的风筝一样</mark>。</p><label class="tr-check"><input type="checkbox" id="tr-auto" ${s.autoScan ? 'checked' : ''}>回复完成后执行规则（自动应用 / 审阅）</label><label class="tr-check"><input type="checkbox" id="tr-launcher-enabled" ${s.showLauncher ? 'checked' : ''}>显示悬浮球</label><div class="tr-launcher-settings"><label class="tr-launcher-color"><span class="tr-label">图标颜色</span><select id="tr-launcher-color">${[['theme', '跟随美化'], ['graphite', '石墨'], ['blue', '浅蓝'], ['sage', '鼠尾草'], ['lavender', '淡紫'], ['sand', '奶茶']].map(([v,t]) => `<option value="${v}" ${s.launcherColor === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>${this.slider('tr-launcher-opacity', '图标透明度', s.launcherTransparency)}<span class="tr-launcher-preview" data-launcher-preview aria-label="悬浮球预览">${glyph('pencil')}</span></div><div class="tr-scope-entries">${button(`标签提取 <span>${s.extractEnabled && s.extractTags.length ? s.extractTags.length + ' 个' : '全文'} ›</span>`, 'data-scope="extract"')}${button(`内容排除 <span>${s.excludeEnabled ? s.excludeRules.length + ' 条' : '关闭'} ›</span>`, 'data-scope="exclude"')}</div>`);
+    this.body(`<div class="tr-appearance-row"><label class="tr-field">界面美化<select id="tr-appearance" ${s.appearanceEnabled === false ? 'disabled' : ''}>${[['minimal', '极简'], ['paper', '暖纸'], ['mist', '青雾'], ['lavender', '淡紫']].map(([v, t]) => `<option value="${v}" ${s.appearance === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label><button type="button" id="tr-appearance-toggle" data-appearance-toggle aria-pressed="${s.appearanceEnabled !== false}">${s.appearanceEnabled === false ? '启用' : '已启用'}</button></div><div class="tr-mode-row"><div><span class="tr-label">显示模式</span><div class="tr-themes">${button('日间', `data-theme="light" aria-pressed="${s.theme === 'light'}"`)}${button('夜间', `data-theme="dark" aria-pressed="${s.theme === 'dark'}"`)}</div></div>${this.slider('tr-opacity', '背景透明度', s.transparency)}</div><label class="tr-field">修订配色<select id="tr-palette">${[['classic', '经典'], ['soft', '柔和'], ['vivid', '鲜明']].map(([v, t]) => `<option value="${v}" ${s.palette === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>${this.legend()}<p class="tr-sentence tr-preview">他的神情<del>极其</del><ins>十分</ins>冷漠。<br>他<mark>像丢了魂一样</mark>愣在原地。</p><label class="tr-check"><input type="checkbox" id="tr-auto" ${s.autoScan ? 'checked' : ''}>回复完成后执行规则（自动应用 / 审阅）</label><label class="tr-check"><input type="checkbox" id="tr-launcher-enabled" ${s.showLauncher ? 'checked' : ''}>显示悬浮球</label><div class="tr-launcher-settings"><label class="tr-launcher-color"><span class="tr-label">图标颜色</span><select id="tr-launcher-color">${[['theme', '跟随美化'], ['graphite', '石墨'], ['blue', '浅蓝'], ['sage', '鼠尾草'], ['lavender', '淡紫'], ['sand', '奶茶']].map(([v,t]) => `<option value="${v}" ${s.launcherColor === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>${this.slider('tr-launcher-opacity', '图标透明度', s.launcherTransparency)}<span class="tr-launcher-preview" data-launcher-preview aria-label="悬浮球预览">${glyph('pencil')}</span></div><div class="tr-scope-entries">${button(`标签提取 <span>${s.extractEnabled && s.extractTags.length ? s.extractTags.length + ' 个' : '全文'} ›</span>`, 'data-scope="extract"')}${button(`内容排除 <span>${s.excludeEnabled ? s.excludeRules.length + ' 条' : '关闭'} ›</span>`, 'data-scope="exclude"')}</div>`);
     this.launcherTheme();
   }
   launcherTheme() {
@@ -272,6 +289,11 @@ export class RevisionUI {
     const data = b.dataset;
     if (data.action === 'close') { this.dialog.close(); return; }
     if (this.c.busy) return;
+    if (data.appearanceToggle !== undefined) {
+      const s = this.c.settings();
+      s.appearanceEnabled = s.appearanceEnabled === false;
+      this.c.saveSettings(); this.theme(); this.render(); return;
+    }
     if (data.toggle !== undefined) {
       const r = this.c.current();
       this.c.target(r);
@@ -330,8 +352,14 @@ export class RevisionUI {
         const id = m?.extra?.text_revision?.id === r?.messageUid ? r.messageId : undefined;
         this.edit = null; await this.c.detect(id); break;
       }
-      case 'new-rule': this.ruleId = 'new'; this.screen = 'rules'; this.render(); this.dialog.querySelector('#tr-find').focus(); break;
-      case 'cancel-rule': this.ruleDrafts.delete(this.ruleId); this.ruleId = null; this.render(); break;
+      case 'new-rule': this.openRuleModal(); break;
+      case 'cancel-rule': {
+        this.ruleDrafts.delete(this.ruleId);
+        const inModal = this.ruleModal.open;
+        this.ruleId = null;
+        if (inModal) this.ruleModal.close(); else this.render();
+        break;
+      }
       case 'cancel-edit': this.drafts.delete(this.edit.key); this.edit = null; this.render(); break;
       case 'finish-edit': {
         const r = this.c.current(); this.c.target(r);
@@ -353,11 +381,6 @@ export class RevisionUI {
       return;
     }
     if (e.target.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[e.target.dataset.ruleField] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-    if (e.target.dataset.ruleField === 'wholeReplacement') {
-      this.dialog.querySelector('#tr-replacement-help').textContent = e.target.checked
-        ? '整框是一份替换内容，标点、空格和换行原样保留。留空删除。'
-        : '英文逗号或换行分隔多个候选，每处随机选一个；只有一个就固定替换，留空删除。中文逗号保留。';
-    }
     if (e.target.dataset.ruleField) { const preview = this.dialog.querySelector('#tr-rule-preview'); if (preview) preview.textContent = ''; }
     if (e.target.id === 'tr-extract-tags') this.scopeDraft.extractTags = e.target.value;
     if (e.target.dataset.boundary) this.scopeDraft.excludeRules[Number(e.target.dataset.pair)][e.target.dataset.boundary] = e.target.value;
@@ -399,6 +422,9 @@ export class RevisionUI {
     if (rules.some(r => r.id !== rule.id && signature(r) === signature(rule))) throw new Error('已经有完全相同的规则。');
     if (old) rules.splice(rules.indexOf(old), 1, rule);
     else { if (rules.length >= 200) throw new Error('最多保存 200 条规则。'); rules.push(rule); }
-    this.c.saveSettings(); this.ruleDrafts.delete(this.ruleId); this.ruleId = null; this.screen = 'rules'; this.render(); this.say('规则已保存，下次检测生效。');
+    const inModal = this.ruleModal.open;
+    this.c.saveSettings(); this.ruleDrafts.delete(this.ruleId); this.ruleId = null; this.screen = 'rules';
+    if (inModal) this.ruleModal.close();
+    this.render(); this.say('规则已保存，下次检测生效。');
   }
 }

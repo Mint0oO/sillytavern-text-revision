@@ -43,6 +43,7 @@ export class RevisionController {
     }
     s.theme ??= 'light';
     s.appearance ??= 'minimal';
+    s.appearanceEnabled ??= true;
     s.palette ??= 'soft';
     s.transparency ??= 0;
     s.autoScan ??= true;

@@ -175,3 +175,21 @@
 #tr-launcher[data-launcher-color=sage],#tr-root .tr-launcher-preview[data-launcher-color=sage]{--tr-launcher-bg:#c1d3be;--tr-launcher-ink:#3b5738}
 #tr-launcher[data-launcher-color=lavender],#tr-root .tr-launcher-preview[data-launcher-color=lavender]{--tr-launcher-bg:#d6c9e5;--tr-launcher-ink:#58456f}
 #tr-launcher[data-launcher-color=sand],#tr-root .tr-launcher-preview[data-launcher-color=sand]{--tr-launcher-bg:#e2cfb7;--tr-launcher-ink:#65503a}
+
+/* Standalone new-rule modal (nested above the main panel) */
+#tr-root #tr-rule-modal{border:1px solid var(--tr-border);border-radius:12px;padding:0;background:var(--tr-bg);color:var(--tr-ink);width:min(560px,calc(100vw - 32px));max-height:86vh;margin:auto;box-shadow:0 12px 48px #0005}
+#tr-root #tr-rule-modal::backdrop{background:#0003}
+#tr-root #tr-rule-modal .tr-modal-shell{display:flex;flex-direction:column;max-height:86vh}
+#tr-root #tr-rule-modal .tr-modal-head{flex:none;display:flex;align-items:center;justify-content:space-between;gap:8px;padding:10px 14px;border-bottom:1px solid var(--tr-border)}
+#tr-root #tr-rule-modal h3{margin:0;font-size:15px;font-weight:500;color:var(--tr-ink);white-space:nowrap}
+#tr-root #tr-rule-modal .tr-modal-body{padding:6px 14px 14px;overflow-y:auto;overscroll-behavior:contain}
+#tr-root #tr-rule-modal .tr-rule-editor{background:none;padding:0;margin:0}
+#tr-root #tr-rule-modal textarea{min-height:72px}
+
+/* Appearance picker shrinks to the left; the enable toggle sits on the right */
+#tr-root .tr-appearance-row{display:flex;align-items:flex-end;gap:10px}
+#tr-root .tr-appearance-row .tr-field{flex:1;min-width:0;margin:16px 0 12px}
+#tr-root #tr-appearance-toggle{flex:none;height:40px;margin-bottom:12px;padding:0 18px;border:1px solid var(--tr-border);border-radius:6px;background:var(--tr-soft);color:var(--tr-ink);white-space:nowrap}
+#tr-root #tr-appearance-toggle[aria-pressed=true]{background:var(--tr-btn);color:var(--tr-btn-text);border-color:var(--tr-btn)}
+#tr-root select#tr-appearance:disabled{opacity:.45;cursor:default}
+@media(max-width:640px){#tr-root #tr-appearance-toggle{min-height:40px;padding:0 14px}}
