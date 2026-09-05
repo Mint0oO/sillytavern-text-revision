@@ -6,7 +6,7 @@ export function attachAutoDetection(c, ui, clock = { setTimeout: (fn, delay) => 
   let timer, epoch = 0, running = false;
   const pending = new Map();
   const on = (type, callback) => { if (types[type]) ctx.eventSource.on(types[type], callback); };
-  const clear = () => { epoch++; clock.clearTimeout(timer); pending.clear(); };
+  const clear = () => { epoch++; c.detectionSequence++; clock.clearTimeout(timer); pending.clear(); };
   const arm = () => {
     clock.clearTimeout(timer);
     timer = clock.setTimeout(flush, 250);
@@ -28,7 +28,10 @@ export function attachAutoDetection(c, ui, clock = { setTimeout: (fn, delay) => 
         if (snapshot.epoch !== epoch || snapshot.key !== chatKey(context) || m !== snapshot.message || m.mes !== snapshot.text || swipeId(m) !== snapshot.swipe) continue;
         try {
           const round = await c.detect(id, { auto: true });
-          if (snapshot.epoch === epoch && snapshot.key === chatKey(c.context()) && round?.count && c.editable(round)) await ui.openDetected(round);
+          if (snapshot.epoch === epoch && snapshot.key === chatKey(c.context()) && round?.count && c.editable(round)) {
+            await c.commit(round, { automatic: true });
+            if (snapshot.epoch === epoch && snapshot.key === chatKey(c.context()) && !round.reviewed && c.editable(round)) await ui.openDetected(round);
+          }
         } catch (error) { if (snapshot.epoch === epoch) ui.say(error.message, true); }
       }
     } finally { running = false; if (pending.size) arm(); }

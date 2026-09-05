@@ -1,7 +1,9 @@
-import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, scan, needsLanguage } from './engine.js';
+import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, needsLanguage } from './engine.js';
 import { clone } from './controller.js';
 import { ensureLanguage } from './language.js';
-import { createRuleDraft, syncRuleDraft, simpleRule, clearExtraConditions } from './rule-editor.js';
+import { createRuleDraft, syncRuleDraft, simpleRule, clearExtraConditions, bulkRules } from './rule-editor.js';
+import { renderRulesView } from './rules-view.js';
+import { scanPrepared } from './scanner.js';
 import { renderRuleForm, renderCaptureFields } from './rule-form.js';
 
 const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
@@ -15,6 +17,8 @@ export class RevisionUI {
     this.edit = null;
     this.drafts = new Map();
     this.ruleId = null;
+    this.ruleFilters = { category: '', action: '', search: '' };
+    this.bulkDraft = { text: '', mode: 'text', action: 'delete', category: 'word', execution: 'review' };
     this.ruleDrafts = new Map();
     this.historical = null;
     this.scopeDraft = null;
@@ -118,7 +122,7 @@ export class RevisionUI {
   badge() {
     this.launcher.hidden = !this.c.settings().showLauncher;
     const round = this.c.current();
-    const count = round ? round.count - processed(round) : 0;
+    const count = round && !round.reviewed && this.c.editable(round) ? round.count - processed(round) : 0;
     const badge = this.launcher.querySelector('small');
     badge.hidden = !count;
     badge.textContent = String(count);
@@ -178,10 +182,11 @@ export class RevisionUI {
     const r = history ? this.c.history().find(r => r.id === this.historical) : this.c.current();
     if (!r) { this.body(`<div class="tr-empty">打开一条 AI 回复后开始检测。${button('检测最新回复', 'data-action="scan-latest"')}</div>`); return; }
     const editable = !history && this.c.editable(r);
-    this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${!editable && !history ? '<p class="tr-meta">正文或检测范围已变化，请重新检测。</p>' : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
+    this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${r.reviewed ? '<p class="tr-meta">本轮已完成审阅，保留项不再提醒。</p>' : ''}${!editable && !history ? '<p class="tr-meta">正文或检测范围已变化，请重新检测。</p>' : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
+    if (r.log?.length) this.dialog.querySelector('.tr-main').insertAdjacentHTML('beforeend', `<details class="tr-change-log"><summary>修改日志 · ${r.log.length} 处</summary>${r.log.map(entry => `<p class="tr-meta">${entry.automatic ? '自动' : '手动'} · ${esc(entry.rule)}</p><p class="tr-sentence"><del>${esc(entry.before)}</del> → <ins>${esc(entry.after || '（删除）')}</ins></p>`).join('')}</details>`);
     if (!history) {
       const eligible = r.groups.filter(ready), n = this.c.selectedCount(r);
-      this.dialog.querySelector('.tr-foot').innerHTML = `<label class="tr-check"><input type="checkbox" data-all ${eligible.length && eligible.length === n ? 'checked' : ''} ${!editable || !eligible.length ? 'disabled' : ''}>全选</label><div>${r.undo && editable ? button('撤销', 'data-action="undo"') : ''}${button(`应用所选 ${n}`, `class="tr-primary" data-action="apply" ${!editable || !n || this.edit ? 'disabled' : ''}`)}</div>`;
+      this.dialog.querySelector('.tr-foot').innerHTML = `<label class="tr-check"><input type="checkbox" data-all ${eligible.length && eligible.length === n ? 'checked' : ''} ${!editable || !eligible.length ? 'disabled' : ''}>全选</label><div>${editable && !r.reviewed && !this.edit ? button('完成审阅', 'data-action="finish-review"') : ''}${r.undo && editable ? button('撤销', 'data-action="undo"') : ''}${button(`应用所选 ${n}`, `class="tr-primary" data-action="apply" ${!editable || !n || this.edit ? 'disabled' : ''}`)}</div>`;
     }
   }
   row(g, editable) {
@@ -199,8 +204,7 @@ export class RevisionUI {
     return `<section class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''}">${content}${editable ? icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`) : ''}</section>`;
   }
   rulesView() {
-    const rules = this.c.settings().rules;
-    this.body(`<div class="tr-bar"><span>${rules.length} 条规则</span>${button('＋ 新建', 'data-action="new-rule"')}</div>${this.ruleId === 'new' ? this.ruleForm() : ''}${rules.map(r => `<section class="tr-rule-section"><div class="tr-rule-row">${button(`<span>${esc(r.find)}</span><span class="tr-meta">${r.values.length ? `${r.values.length} 个替换词` : r.remove ? '仅删除' : '仅检测'} ${this.ruleId === r.id ? '⌃' : '⌄'}</span>`, `class="tr-rule" data-rule="${esc(r.id)}" aria-expanded="${this.ruleId === r.id}"`)}<label class="tr-select"><input type="checkbox" data-rule-enabled="${esc(r.id)}" aria-label="启用规则：${esc(r.find)}" ${r.enabled ? 'checked' : ''}></label></div>${this.ruleId === r.id ? this.ruleForm() : ''}</section>`).join('')}`);
+    this.body(renderRulesView(this.c.settings().rules, this.ruleFilters, this.ruleId, () => this.ruleForm(), this.bulkDraft));
   }
   ruleForm() {
     if (!this.ruleDrafts.has(this.ruleId)) this.ruleDrafts.set(this.ruleId, createRuleDraft(this.c.settings().rules.find(r => r.id === this.ruleId)));
@@ -218,8 +222,8 @@ export class RevisionUI {
     target.textContent = '正在检测…';
     try {
       if (needsLanguage([rule])) await ensureLanguage();
+      const round = await scanPrepared(sample, [rule], { random: () => 0, context: this.c.context() });
       if (!target.isConnected || JSON.stringify(draft) !== inputSnapshot) return;
-      const round = scan(sample, [rule], { random: () => 0 });
       target.innerHTML = round.groups.map(g => `<p class="tr-sentence">${inlineHTML(g)}</p><p class="tr-meta">${g.matches.map(m => Object.entries(m.captures).map(([key, value]) => `${esc(key)} = ${esc(value)}`).join('；')).filter(Boolean).join('<br>')}</p>`).join('') || '<p class="tr-meta">没有命中这条规则。</p>';
     } catch (error) { target.textContent = error.message; }
   }
@@ -228,7 +232,7 @@ export class RevisionUI {
   }
   settingsView() {
     const s = this.c.settings();
-    this.body(`<label class="tr-field">界面美化<select id="tr-appearance">${[['minimal', '极简'], ['paper', '暖纸'], ['mist', '青雾'], ['lavender', '淡紫']].map(([v, t]) => `<option value="${v}" ${s.appearance === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label><div class="tr-mode-row"><div><span class="tr-label">显示模式</span><div class="tr-themes">${button('日间', `data-theme="light" aria-pressed="${s.theme === 'light'}"`)}${button('夜间', `data-theme="dark" aria-pressed="${s.theme === 'dark'}"`)}</div></div>${this.slider('tr-opacity', '背景透明度', s.transparency)}</div><label class="tr-field">修订配色<select id="tr-palette">${[['classic', '经典'], ['soft', '柔和'], ['vivid', '鲜明']].map(([v, t]) => `<option value="${v}" ${s.palette === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>${this.legend()}<p class="tr-sentence tr-preview">壁炉旁的空位<del>极具</del><ins>很有</ins>吸引力。<br>他的思绪<mark>像断了线的风筝一样</mark>。</p><label class="tr-check"><input type="checkbox" id="tr-auto" ${s.autoScan ? 'checked' : ''}>回复完成后自动检测</label><label class="tr-check"><input type="checkbox" id="tr-launcher-enabled" ${s.showLauncher ? 'checked' : ''}>显示悬浮球</label><div class="tr-launcher-settings"><label class="tr-launcher-color"><span class="tr-label">图标颜色</span><select id="tr-launcher-color">${[['theme', '跟随美化'], ['graphite', '石墨'], ['blue', '浅蓝'], ['sage', '鼠尾草'], ['lavender', '淡紫'], ['sand', '奶茶']].map(([v,t]) => `<option value="${v}" ${s.launcherColor === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>${this.slider('tr-launcher-opacity', '图标透明度', s.launcherTransparency)}<span class="tr-launcher-preview" data-launcher-preview aria-label="悬浮球预览">${glyph('pencil')}</span></div><div class="tr-scope-entries">${button(`标签提取 <span>${s.extractEnabled && s.extractTags.length ? s.extractTags.length + ' 个' : '全文'} ›</span>`, 'data-scope="extract"')}${button(`内容排除 <span>${s.excludeEnabled ? s.excludeRules.length + ' 条' : '关闭'} ›</span>`, 'data-scope="exclude"')}</div>`);
+    this.body(`<label class="tr-field">界面美化<select id="tr-appearance">${[['minimal', '极简'], ['paper', '暖纸'], ['mist', '青雾'], ['lavender', '淡紫']].map(([v, t]) => `<option value="${v}" ${s.appearance === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label><div class="tr-mode-row"><div><span class="tr-label">显示模式</span><div class="tr-themes">${button('日间', `data-theme="light" aria-pressed="${s.theme === 'light'}"`)}${button('夜间', `data-theme="dark" aria-pressed="${s.theme === 'dark'}"`)}</div></div>${this.slider('tr-opacity', '背景透明度', s.transparency)}</div><label class="tr-field">修订配色<select id="tr-palette">${[['classic', '经典'], ['soft', '柔和'], ['vivid', '鲜明']].map(([v, t]) => `<option value="${v}" ${s.palette === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>${this.legend()}<p class="tr-sentence tr-preview">壁炉旁的空位<del>极具</del><ins>很有</ins>吸引力。<br>他的思绪<mark>像断了线的风筝一样</mark>。</p><label class="tr-check"><input type="checkbox" id="tr-auto" ${s.autoScan ? 'checked' : ''}>回复完成后执行规则（自动应用 / 审阅）</label><label class="tr-check"><input type="checkbox" id="tr-launcher-enabled" ${s.showLauncher ? 'checked' : ''}>显示悬浮球</label><div class="tr-launcher-settings"><label class="tr-launcher-color"><span class="tr-label">图标颜色</span><select id="tr-launcher-color">${[['theme', '跟随美化'], ['graphite', '石墨'], ['blue', '浅蓝'], ['sage', '鼠尾草'], ['lavender', '淡紫'], ['sand', '奶茶']].map(([v,t]) => `<option value="${v}" ${s.launcherColor === v ? 'selected' : ''}>${t}</option>`).join('')}</select></label>${this.slider('tr-launcher-opacity', '图标透明度', s.launcherTransparency)}<span class="tr-launcher-preview" data-launcher-preview aria-label="悬浮球预览">${glyph('pencil')}</span></div><div class="tr-scope-entries">${button(`标签提取 <span>${s.extractEnabled && s.extractTags.length ? s.extractTags.length + ' 个' : '全文'} ›</span>`, 'data-scope="extract"')}${button(`内容排除 <span>${s.excludeEnabled ? s.excludeRules.length + ' 条' : '关闭'} ›</span>`, 'data-scope="exclude"')}</div>`);
     this.launcherTheme();
   }
   launcherTheme() {
@@ -259,7 +263,7 @@ export class RevisionUI {
   }
   historyView() {
     const history = this.c.history();
-    this.body(`<p class="tr-meta">共检测 ${this.c.context().chatMetadata?.text_revision?.total ?? 0} 轮 · 保留最近 ${history.length} 轮</p>${history.slice().reverse().map(r => `<div class="tr-record"><div><span class="tr-round-number" aria-label="第 ${r.number} 轮">${r.number}</span><span class="tr-record-count">${r.count}处问题/${r.groups.length}字段</span>${button('查看', `data-round="${esc(r.id)}"`)}</div><span class="tr-meta">回复 #${r.messageId + 1} · ${new Date(r.time).toLocaleString()} · 已处理 ${processed(r)}/${r.count} 处</span></div>`).join('') || '<p class="tr-empty">还没有检测记录。</p>'}`);
+    this.body(`<p class="tr-meta">共检测 ${this.c.context().chatMetadata?.text_revision?.total ?? 0} 轮 · 保留最近 ${history.length} 轮</p>${history.slice().reverse().map(r => `<div class="tr-record"><div><span class="tr-round-number" aria-label="第 ${r.number} 轮">${r.number}</span><span class="tr-record-count">${r.count}处问题/${r.groups.length}字段</span>${button('查看', `data-round="${esc(r.id)}"`)}</div><span class="tr-meta">回复 #${r.messageId + 1} · ${new Date(r.time).toLocaleString()} · 已处理 ${processed(r)}/${r.count} 处${r.reviewed ? ' · 已完成审阅' : ''}</span></div>`).join('') || '<p class="tr-empty">还没有检测记录。</p>'}`);
   }
   async click(e) {
     const b = e.target.closest('button');
@@ -304,6 +308,15 @@ export class RevisionUI {
       this.drafts.delete(this.edit?.key); this.edit = null; this.render(); await this.c.persistDraft(); return;
     }
     switch (data.action) {
+      case 'finish-review': await this.c.finishReview(this.c.current()); this.say('本轮已完成，未应用的内容保留，不再提醒。'); break;
+      case 'bulk-add': {
+        const rules = this.c.settings().rules, incoming = bulkRules(this.bulkDraft.text, this.bulkDraft);
+        const signature = r => { const { id, enabled, ...rest } = validateRule(r); return JSON.stringify(rest); };
+        const seen = new Set(rules.map(signature));
+        const added = incoming.filter(r => { const key = signature(r); if (seen.has(key)) return false; seen.add(key); return true; });
+        if (rules.length + added.length > 200) throw new Error('添加后超过 200 条规则，请减少数量。');
+        rules.push(...added); this.c.saveSettings(); this.bulkDraft.text = ''; this.render(); this.say(`已添加 ${added.length} 条规则，重复项已跳过。`); break;
+      }
       case 'clear-rule-conditions': clearExtraConditions(this.ruleDrafts.get(this.ruleId)); this.render(); break;
       case 'preview-rule': await this.previewRule(); break;
       case 'add-pair':
@@ -331,12 +344,21 @@ export class RevisionUI {
     }
   }
   input(e) {
+    if (e.target.dataset.bulkField) this.bulkDraft[e.target.dataset.bulkField] = e.target.value;
+    if (e.target.dataset.ruleFilter) {
+      const key = e.target.dataset.ruleFilter, position = e.target.selectionStart;
+      this.ruleFilters[key] = e.target.value; this.render();
+      const input = this.dialog.querySelector(`[data-rule-filter="${key}"]`); input?.focus();
+      if (key === 'search') input.setSelectionRange(position, position);
+      return;
+    }
     if (e.target.dataset.captureKey) {
       const draft = this.ruleDrafts.get(this.ruleId), key = e.target.dataset.captureKey;
       draft.captures ??= {}; draft.captures[key] ??= { type: 'text', words: [] };
       draft.captures[key][e.target.dataset.captureField] = e.target.value;
     }
     if (e.target.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[e.target.dataset.ruleField] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
+    if (e.target.dataset.ruleField === 'mode') { syncRuleDraft(this.ruleDrafts.get(this.ruleId)); this.render(); return; }
     if (e.target.dataset.ruleField === 'find' || e.target.dataset.captureField === 'type') {
       const draft = this.ruleDrafts.get(this.ruleId); syncRuleDraft(draft);
       this.dialog.querySelector('#tr-captures').innerHTML = renderCaptureFields(draft);
@@ -361,7 +383,7 @@ export class RevisionUI {
   }
   async change(e) {
     const el = e.target;
-    if (el.dataset.captureKey || el.dataset.ruleField) this.input(e);
+    if (el.dataset.captureKey || el.dataset.ruleField || el.dataset.ruleFilter || el.dataset.bulkField) this.input(e);
     if (el.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[el.dataset.ruleField] = el.type === 'checkbox' ? el.checked : el.value;
     if (el.id === 'tr-launcher-color') { this.c.settings().launcherColor = el.value; this.launcherTheme(); this.c.saveSettings(); }
     if (el.dataset.scopeToggle) this.scopeDraft[el.dataset.scopeToggle] = el.checked;

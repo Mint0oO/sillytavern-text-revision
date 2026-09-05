@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { RevisionController, KEY, verifyChatSave } from '../controller.js';
-import { DEFAULT_RULES, ENGINE_VERSION } from '../engine.js';
+import { DEFAULT_RULES, ENGINE_VERSION, validateRule } from '../engine.js';
 
 function fixture() {
   let disk, fails = false, renders = 0;
@@ -176,4 +176,48 @@ test('new rule settings trigger automatic redetection even when the original tex
   f.ctl.settings().rules[0].enabled = false;
   const second = await f.ctl.detect(0, { auto: true });
   assert.equal(first.count, 2); assert.equal(second.count, 1);
+});
+
+test('automatic regex commit saves only allowed changes, with log, reload and undo', async () => {
+  const f = fixture(), source = '他死死地抓住她，极其紧张。';
+  f.ctx.chat[0].mes = source; f.ctx.chat[0].swipes[1] = source;
+  f.ctl.settings().rules = [validateRule({ kind: 'regex', find: '/死死地?/g', action: 'delete', remove: true, execution: 'auto' }), DEFAULT_RULES[0]];
+  const r = await f.ctl.detect(); await f.ctl.commit(r, { automatic: true });
+  assert.equal(f.disk()[0].mes, '他抓住她，极其紧张。');
+  assert.equal(r.reviewed, false); assert.equal(r.log[0].before, '死死地');
+  const reloaded = new RevisionController(() => f.ctx, f.ctl.verifySave);
+  await reloaded.commit(reloaded.current(), { undo: true });
+  assert.equal(f.disk()[0].mes, source); assert.equal(r.log.length, 0);
+  await f.ctl.commit(r, { automatic: true });
+  await f.ctl.commit(r);
+  assert.equal(f.disk()[0].mes, '他抓住她，紧张。'); assert.equal(r.reviewed, true);
+  assert.equal(await f.ctl.detect(0, { auto: true }), null);
+});
+
+test('manual apply dismisses remaining suggestions while all-kept review writes no text', async () => {
+  const f = fixture(), r = await f.ctl.detect(); r.groups[1].selected = false;
+  await f.ctl.commit(r); assert.equal(r.reviewed, true); assert.equal(r.groups[1].matches[0].done, false);
+  await f.ctl.commit(r, { undo: true }); assert.notEqual(r.reviewed, true);
+  const before = f.ctx.chat[0].mes; await f.ctl.finishReview(r);
+  assert.equal(r.reviewed, true); assert.equal(f.ctx.chat[0].mes, before);
+  const fresh = await f.ctl.detect(); assert.notEqual(fresh.reviewed, true);
+});
+
+test('failed automatic save retains the original, retryable proposal and unread status', async () => {
+  const f = fixture(); f.ctl.settings().rules[0].execution = 'auto';
+  const r = await f.ctl.detect(); f.fail();
+  await assert.rejects(f.ctl.commit(r, { automatic: true }), /未能确认保存/);
+  assert.equal(r.expected, r.base); assert.notEqual(r.reviewed, true);
+  assert.equal(r.log, undefined); assert.equal(r.groups[0].matches[0].done, false);
+});
+
+test('server readback requires persisted completion metadata, even when text is unchanged', async t => {
+  const f = fixture(), r = await f.ctl.detect();
+  f.ctx.characters = [{ name: '测试', avatar: 'demo.png' }]; f.ctx.getRequestHeaders = () => ({});
+  let metadata = structuredClone(f.ctx.chatMetadata);
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => [{ chat_metadata: metadata }, ...f.disk()] }));
+  r.reviewed = true;
+  await assert.rejects(verifyChatSave(f.ctx, r, r.expected), /审阅/);
+  metadata = structuredClone(f.ctx.chatMetadata);
+  await verifyChatSave(f.ctx, r, r.expected);
 });

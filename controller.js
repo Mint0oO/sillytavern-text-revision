@@ -1,5 +1,6 @@
-import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, ENGINE_VERSION, needsLanguage, scan, applySelected, ready, newId, normalizeScope, scopeKey } from './engine.js';
+import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, ENGINE_VERSION, needsLanguage, applySelected, ready, newId, normalizeScope, scopeKey } from './engine.js';
 import { ensureLanguage } from './language.js';
+import { scanPrepared } from './scanner.js';
 
 export const KEY = 'text_revision';
 export const clone = value => structuredClone(value);
@@ -75,7 +76,7 @@ export class RevisionController {
     return m;
   }
   editable(round) {
-    try { this.target(round); return round.engineVersion === ENGINE_VERSION && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
+    try { this.target(round); return round.engineVersion === ENGINE_VERSION && round.rulesKey === JSON.stringify(this.settings().rules) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
     catch { return false; }
   }
   async detect(messageId = this.latestReply(), { auto = false } = {}) {
@@ -86,19 +87,19 @@ export class RevisionController {
     const sequence = ++this.detectionSequence;
     const settings = this.settings(), rules = clone(settings.rules), scope = normalizeScope(settings);
     const snapshot = { key: chatKey(c), text: m.mes, swipe: swipeId(m), rules: JSON.stringify(rules), history: c.chatMetadata[KEY] };
-    if (needsLanguage(rules)) await this.prepareLanguage();
-    const now = this.context();
-    if (sequence !== this.detectionSequence || chatKey(now) !== snapshot.key || now.chat[messageId] !== m || m.mes !== snapshot.text || swipeId(m) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || JSON.stringify(this.settings().rules) !== snapshot.rules || now.chatMetadata[KEY] !== snapshot.history) {
-      throw new Error('加载分词组件时正文或设置已变化，请重新检测。');
-    }
-    this.assertIdle();
     const history = this.history();
     const previous = history.findLast(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m));
     if (auto && previous?.engineVersion === ENGINE_VERSION && previous.rulesKey === snapshot.rules && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) {
       if (this.selectedId !== previous.id) { this.selectedId = previous.id; this.onChange(); }
       return null;
     }
-    const round = scan(snapshot.text, rules, { scope });
+    if (needsLanguage(rules)) await this.prepareLanguage();
+    const round = await scanPrepared(snapshot.text, rules, { scope, context: c });
+    const now = this.context();
+    if (sequence !== this.detectionSequence || chatKey(now) !== snapshot.key || now.chat[messageId] !== m || m.mes !== snapshot.text || swipeId(m) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || JSON.stringify(this.settings().rules) !== snapshot.rules || now.chatMetadata[KEY] !== snapshot.history) {
+      throw new Error('检测期间正文或设置已变化，请重新检测。');
+    }
+    this.assertIdle();
     m.extra ??= {};
     m.extra[KEY] ??= { id: newId() };
     Object.assign(round, { rulesKey: snapshot.rules, chatKey: chatKey(c), messageId, messageUid: m.extra[KEY].id, swipeId: swipeId(m), number: (c.chatMetadata[KEY]?.total ?? 0) + 1 });
@@ -113,7 +114,16 @@ export class RevisionController {
   }
   saveSettings() { this.context().saveSettingsDebounced(); }
   async persistDraft() { await this.context().saveChat(); }
-  async commit(round, { undo = false } = {}) {
+  async finishReview(round) {
+    this.assertIdle();
+    if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测。');
+    const c = this.context(), previous = round.reviewed, selections = round.groups.map(g => g.selected);
+    this.busy = true; round.reviewed = true; round.groups.forEach(g => { g.selected = false; }); this.onChange();
+    try { await c.saveChat(); await this.verifySave(c, round, round.expected); }
+    catch (error) { round.reviewed = previous; round.groups.forEach((g, i) => { g.selected = selections[i]; }); throw new Error(`未能确认审阅状态已保存。${error.message}`); }
+    finally { this.busy = false; this.onChange(); }
+  }
+  async commit(round, { undo = false, automatic = false } = {}) {
     this.assertIdle();
     if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测后再应用。');
     const m = this.target(round), c = this.context(), before = m.mes, originalRound = clone(round), copy = clone(round);
@@ -124,9 +134,14 @@ export class RevisionController {
       if (!copy.undo) throw new Error('没有可以撤销的修改。');
       copy.expected = copy.undo.text;
       copy.groups = copy.undo.groups;
+      copy.reviewed = copy.undo.reviewed;
+      copy.log = copy.undo.log ?? [];
       copy.undo = null;
       changed = 1;
-    } else changed = applySelected(copy);
+    } else {
+      changed = applySelected(copy, { automatic });
+      copy.reviewed = automatic ? !copy.groups.some(g => !g.kept && g.matches.some(m => !m.done)) : true;
+    }
     if (!changed) return 0;
     this.busy = true;
     this.onChange();
@@ -155,6 +170,7 @@ export class RevisionController {
         if (oldSwipes === undefined) delete m.swipes; else m.swipes = oldSwipes;
         m.extra = oldExtra;
         if (oldSwipeInfo === undefined) delete m.swipe_info; else m.swipe_info = oldSwipeInfo;
+        for (const key of Object.keys(round)) if (!Object.hasOwn(originalRound, key)) delete round[key];
         Object.assign(round, originalRound);
         if (chatKey(this.context()) === round.chatKey) c.updateMessageBlock(round.messageId, m);
       }
@@ -177,5 +193,9 @@ export async function verifyChatSave(c, round, text) {
   const m = messages[round.messageId];
   if (!m || m.extra?.[KEY]?.id !== round.messageUid || m.mes !== text || swipeId(m) !== round.swipeId || Array.isArray(m.swipes) && m.swipes[round.swipeId] !== text) {
     throw new Error('酒馆尚未保存这版正文，请重试。');
+  }
+  if (round.reviewed) {
+    const metadata = saved.find?.(item => item.chat_metadata)?.chat_metadata;
+    if (!metadata?.[KEY]?.rounds?.some(r => r.id === round.id && r.reviewed)) throw new Error('酒馆尚未保存完成审阅的状态，请重试。');
   }
 }

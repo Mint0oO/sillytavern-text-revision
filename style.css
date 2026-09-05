@@ -163,6 +163,17 @@
 #tr-root .tr-field-heading .tr-meta{display:inline;margin:0}
 #tr-root .tr-rule-editor textarea{min-height:64px;height:64px;max-height:180px}
 #tr-root .tr-form-actions{gap:8px}
+#tr-root .tr-form-grid,#tr-root .tr-rule-filters{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+#tr-root .tr-form-grid .tr-field{min-width:0}
+#tr-root .tr-form-grid select{font-size:13px;padding-inline:4px}
+#tr-root .tr-rule-filters input{grid-column:1/-1}
+#tr-root .tr-rule-heading{font-size:15px;margin:20px 0 6px;color:var(--tr-muted)}
+#tr-root .tr-bulk,#tr-root .tr-change-log{margin:14px 0;padding:10px;border:1px solid var(--tr-border);border-radius:8px}
+#tr-root .tr-bulk textarea{min-height:110px}
+#tr-root .tr-foot>div{display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end}
+#tr-root .tr-foot button{padding-inline:8px}
+#tr-root .tr-change-log .tr-sentence{font-size:14px;overflow-wrap:anywhere}
+#tr-root .tr-rule>span{overflow-wrap:anywhere;min-width:0}
 #tr-launcher[data-launcher-color=graphite],#tr-root .tr-launcher-preview[data-launcher-color=graphite]{--tr-launcher-bg:#535b65;--tr-launcher-ink:#ffffff}
 #tr-launcher[data-launcher-color=blue],#tr-root .tr-launcher-preview[data-launcher-color=blue]{--tr-launcher-bg:#b8d8e7;--tr-launcher-ink:#2d5264}
 #tr-launcher[data-launcher-color=sage],#tr-root .tr-launcher-preview[data-launcher-color=sage]{--tr-launcher-bg:#c1d3be;--tr-launcher-ink:#3b5738}

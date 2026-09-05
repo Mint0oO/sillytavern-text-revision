@@ -50,3 +50,17 @@ test('busy saves defer a scan; disabled auto-scan and clean output do not open t
   f.c.settings().autoScan = true; f.ctx.chat[0].mes = '他睡着了。'; f.emit('CHARACTER_MESSAGE_RENDERED', 0); await f.flush();
   assert.equal(f.c.current().count, 0); assert.equal(f.opens(), 1);
 });
+
+test('fully automatic rules save quietly once, and overlapping review rules remain visible', async () => {
+  const f = fixture();
+  f.ctx.updateMessageBlock = () => {}; f.ctx.eventSource.emit = async () => {};
+  f.c.settings().rules = [{ id: 'auto', kind: 'regex', find: '/极其/g', action: 'delete', remove: true, execution: 'auto' }];
+  f.emit('CHARACTER_MESSAGE_RENDERED', 0); await f.flush();
+  assert.equal(f.ctx.chat[0].mes, '他疲惫。'); assert.equal(f.opens(), 0);
+  assert.equal(f.c.current().reviewed, true); assert.equal(f.c.current().log.length, 1);
+  f.emit('GENERATION_ENDED'); await f.flush(); assert.equal(f.c.history().length, 1);
+  f.ctx.chat[0].mes = '他极其紧张。';
+  f.c.settings().rules.push({ id: 'conflict', kind: 'word', find: '极其', action: 'replace', values: ['很'] });
+  f.emit('CHARACTER_MESSAGE_RENDERED', 0); await f.flush();
+  assert.equal(f.ctx.chat[0].mes, '他极其紧张。'); assert.equal(f.opens(), 1); assert.deepEqual(f.errors, []);
+});

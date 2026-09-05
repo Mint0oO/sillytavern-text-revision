@@ -1,7 +1,8 @@
 // Pure text operations: no chat access, network requests, or DOM writes.
 import { analyzeWords, acceptsWord, CAPTURE_TYPES } from './language.js';
 import { sentenceSpans } from './sentences.js';
-export const ENGINE_VERSION = 3;
+import { parseRegex, replacementParts } from './regex-support.js';
+export const ENGINE_VERSION = 4;
 export const DEFAULT_RULES = [
   { id: 'very', find: '极其', kind: 'word', values: ['十分', '非常'], remove: true, action: 'delete', enabled: true },
   { id: 'possess', find: '极具', kind: 'word', values: ['很有', '有'], remove: false, action: 'replace', enabled: true },
@@ -41,7 +42,8 @@ export function parseRuleValues(text) {
 export function validateRule(rule) {
   const find = String(rule.find ?? '').trim();
   if (!find || find.length > 256) throw new Error('识别内容需要 1–256 个字符。');
-  const kind = rule.kind === 'pattern' ? 'pattern' : 'word';
+  const kind = ['pattern', 'regex'].includes(rule.kind) ? rule.kind : 'word';
+  if (kind === 'regex') parseRegex(find);
   const keys = kind === 'pattern' ? find.match(/\{[A-Z]\}/g) ?? [] : [];
   if (new Set(keys).size !== keys.length || find === keys[0] || keys.length > 4) throw new Error('句式需要固定文字，最多使用 4 个不重复的占位符（{A} 到 {Z}）。');
   if (kind === 'pattern' && /\{[A-Z]\}\{[A-Z]\}/.test(find)) throw new Error('两个占位符之间需要固定文字。');
@@ -57,6 +59,7 @@ export function validateRule(rule) {
   if (kind === 'pattern' && /^\{[A-Z]\}/.test(find) && captures[find[1]].type === 'text') throw new Error('开头的占位符需要指定词性或词语，以免把主语一起替换。');
   const values = [...new Set((Array.isArray(rule.values) ? rule.values : []).map(String).map(s => s.trim()).filter(Boolean))];
   if (values.length > 100 || values.some(s => s.length > 1000)) throw new Error('每条规则最多 100 个候选，每个候选最多 1000 字。');
+  if (kind === 'regex') values.forEach(replacementParts);
   if (kind === 'pattern' && values.some(v => (v.match(/\{[A-Z]\}/g) ?? []).some(k => !keys.includes(k)))) throw new Error('替换候选使用了识别句式中不存在的占位符。');
   const remove = Boolean(rule.remove);
   const action = ['delete', 'replace', 'review'].includes(rule.action) ? rule.action : remove ? 'delete' : values.length ? 'replace' : 'review';
@@ -65,6 +68,8 @@ export function validateRule(rule) {
   const priority = Number(rule.priority ?? 0);
   if (!Number.isInteger(priority) || priority < 0 || priority > 100) throw new Error('优先级需要是 0–100 的整数，数字越大越优先。');
   return { id: String(rule.id || newId()), find, kind, values, remove, action, enabled: rule.enabled !== false, captures,
+    category: ['word', 'sentence'].includes(rule.category) ? rule.category : kind === 'pattern' ? 'sentence' : 'word',
+    execution: rule.execution === 'auto' && action !== 'review' ? 'auto' : 'review',
     punctuation: rule.punctuation === 'following-comma' ? rule.punctuation : 'none',
     boundary: rule.boundary === 'clause' ? 'clause' : 'sentence', priority,
     before: parseConditionWords(rule.before), after: parseConditionWords(rule.after), notBefore: parseConditionWords(rule.notBefore), exceptions: parseConditionWords(rule.exceptions),
@@ -221,7 +226,7 @@ export function textRanges(text, config) {
 
 export function replacement(match) {
   if (match.value === null) return null;
-  const result = match.value.replace(/\{[A-Z]\}/g, k => match.captures[k] ?? k);
+  const result = match.resolved ? match.value : match.value.replace(/\{[A-Z]\}/g, k => match.captures[k] ?? k);
   return result === '' ? '' : result + (match.trailing ?? '');
 }
 export function proposal(group) {
@@ -236,7 +241,7 @@ export function proposal(group) {
 }
 export const ready = g => !g.kept && proposal(g) !== (g.applied ?? g.original);
 export const processed = round => round.groups.reduce((n, g) => n + g.matches.filter(m => m.done).length, 0);
-export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now(), scope, analyze = analyzeWords } = {}) {
+export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now(), scope, analyze = analyzeWords, regexMatches } = {}) {
   if (typeof text !== 'string' || text.length > LIMITS.text) throw new Error('单条回复超过 20 万字，暂不检测。');
   if (rules.length > LIMITS.rules) throw new Error('最多启用 200 条规则。');
   const compiled = rules.map(validateRule).filter(r => r.enabled);
@@ -249,12 +254,14 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
     let found = [];
     let tokens;
     for (const rule of compiled) {
-      const literals = rule.kind === 'pattern' ? rule.find.split(/\{[A-Z]\}/).filter(Boolean) : [rule.find];
+      if (rule.kind === 'regex' && !regexMatches) throw new Error('正则规则需要使用独立检测任务。');
+      const literals = rule.kind === 'regex' ? [] : rule.kind === 'pattern' ? rule.find.split(/\{[A-Z]\}/).filter(Boolean) : [rule.find];
       if (!literals.every(s => sentence.text.includes(s))) continue;
       const linguistic = needsLanguage([rule]);
       if (linguistic) tokens ??= analyze(sentence.text);
-      const { regex, keys } = compile(rule, tokens ?? []);
-      for (const m of sentence.text.matchAll(regex)) {
+      const { regex, keys } = rule.kind === 'regex' ? { keys: [] } : compile(rule, tokens ?? []);
+      const occurrences = rule.kind === 'regex' ? (regexMatches[sentence.index]?.[rule.id] ?? []).map(m => Object.assign([m.text], m)) : sentence.text.matchAll(regex);
+      for (const m of occurrences) {
         if (linguistic && (!tokens.some(t => t.start === m.index) || !tokens.some(t => t.end === m.index + m[0].length))) continue;
         if (keys.some((key, i) => {
           const condition = rule.captures[key[1]], [start, end] = m.indices[i + 1];
@@ -268,12 +275,14 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
           let at = sentence.text.indexOf(w, Math.max(0, m.index - w.length + 1));
           return at >= 0 && at < m.index + m[0].length;
         })) continue;
-        const choice = rule.action === 'delete' ? '' : rule.action === 'replace' ? rule.values[Math.min(rule.values.length - 1, Math.floor(random() * rule.values.length))] : null;
+        const values = m.options ?? rule.values;
+        const choice = rule.action === 'delete' ? '' : rule.action === 'replace' ? values[Math.min(values.length - 1, Math.floor(random() * values.length))] : null;
+        if (rule.kind === 'regex' && choice === m[0]) continue;
         const generic = rule.kind === 'pattern' && rule.find === '像{A}一样';
         const atEnd = rule.reviewAtEnd && /^[\s，,。.!！？?；;…"'”’」』）)\]］】〕〉》]*$/u.test(suffix);
         const trailing = rule.remove && rule.punctuation === 'following-comma' ? suffix.match(/^[ \t]*[，,][ \t]*/)?.[0] ?? '' : '';
         const coreEnd = m.index + m[0].length;
-        found.push({ start: m.index, end: coreEnd + trailing.length, coreEnd, old: m[0] + trailing, trailing, reviewAtEnd: rule.reviewAtEnd, priority: rule.priority, ruleId: rule.id, captures: Object.fromEntries(keys.map((k, i) => [k, m[i + 1]])), options: rule.values, remove: rule.remove, value: atEnd && choice === '' ? null : choice, generic, reason: atEnd && choice === '' ? '句式删除后可能不完整，请手动修改。' : '', done: false });
+        found.push({ start: m.index, end: coreEnd + trailing.length, coreEnd, old: m[0] + trailing, trailing, reviewAtEnd: rule.reviewAtEnd, priority: rule.priority, ruleId: rule.id, ruleFind: rule.find, execution: rule.execution, resolved: rule.kind === 'regex', captures: m.captures ?? Object.fromEntries(keys.map((k, i) => [k, m[i + 1]])), options: values, remove: rule.remove, value: atEnd && choice === '' ? null : choice, generic, reason: atEnd && choice === '' ? '句式删除后可能不完整，请手动修改。' : '', done: false });
         if (found.length > LIMITS.matches) throw new Error('匹配过多，请缩小规则范围后重试。');
       }
     }
@@ -296,6 +305,7 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
         previous.options = [];
         previous.remove = false;
         previous.reason = '多条规则重叠，请手动修改。';
+        previous.execution = 'review';
         previous.trailing = '';
       } else matches.push(match);
     }
@@ -317,14 +327,24 @@ export function rebuild(round) {
   for (const group of [...round.groups].reverse()) if (group.applied !== null) text = text.slice(0, group.start) + group.applied + text.slice(group.end);
   return text;
 }
-export function applySelected(round) {
-  const groups = round.groups.filter(g => g.selected && ready(g));
+export function applySelected(round, { automatic = false } = {}) {
+  const eligible = g => !g.kept && !g.manual && g.matches.some(m => !m.done && m.execution === 'auto' && replacement(m) !== null && replacement(m) !== m.old);
+  const groups = round.groups.filter(g => automatic ? eligible(g) : g.selected && ready(g));
   if (!groups.length) return 0;
-  round.undo = { text: round.expected, groups: structuredClone(round.groups) };
+  round.undo = { text: round.expected, groups: structuredClone(round.groups), reviewed: round.reviewed, log: structuredClone(round.log ?? []) };
+  round.log ??= [];
   for (const group of groups) {
-    group.applied = proposal(group);
+    const before = group.applied ?? group.original;
+    const changes = group.matches.filter(m => automatic ? !m.done && m.execution === 'auto' && replacement(m) !== null : replacement(m) !== null && replacement(m) !== (m.appliedValue ?? m.old));
+    if (automatic) {
+      // Keep original offsets and pending proposals; apply only automatic occurrences.
+      group.applied = proposal({ ...group, matches: group.matches.map(m => m.done || changes.includes(m) ? m : { ...m, value: null }) });
+    } else group.applied = proposal(group);
+    if (group.manual) round.log.push({ before, after: group.applied, rule: '手动编辑整句', automatic: false });
+    else for (const m of changes) if (replacement(m) !== (m.appliedValue ?? m.old)) round.log.push({ before: m.appliedValue ?? m.old, after: replacement(m), rule: m.ruleFind ?? m.ruleId, automatic });
     group.selected = false;
-    for (const m of group.matches) if (group.manual || replacement(m) !== null) m.done = true;
+    for (const m of group.matches) if (group.manual || changes.includes(m)) { m.done = true; m.appliedValue = replacement(m); }
+    if (automatic) group.selected = ready(group);
   }
   round.expected = rebuild(round);
   return groups.length;
