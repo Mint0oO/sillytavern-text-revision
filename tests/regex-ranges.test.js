@@ -32,11 +32,11 @@ test('cross-sentence regex never crosses protected tags, code, or exclusions', a
   assert.equal(r.expected, '<think>甲。乙</think><content>新<status>甲。乙</status>甲<em>乙</em>甲' + code + '乙</content>');
 });
 
-test('mixed old/new matches share coherent groups and overlapping edits remain reviewable', async () => {
+test('mixed old/new matches share coherent groups and overlapping edits choose one result', async () => {
   const old = { kind: 'regex', find: '/乙/g', action: 'replace', values: ['二'] };
-  const r = await scanPrepared('甲。乙。丙。', [rule('甲。乙', '一'), old]);
-  assert.equal(r.groups.length, 1); assert.equal(r.groups[0].matches[0].value, null);
-  applySelected(r); assert.equal(r.expected, '甲。乙。丙。');
+  const r = await scanPrepared('甲。乙。丙。', [rule('甲。乙', '一'), old], { random: () => 0 });
+  assert.equal(r.groups.length, 1); assert.equal(r.groups[0].matches[0].value, '一');
+  applySelected(r); assert.equal(r.expected, '一。丙。');
   const separate = await scanPrepared('甲。乙。丙。', [rule('甲。乙', '一'), { ...old, find: '/丙/g' }]);
   applySelected(separate); assert.equal(separate.expected, '一。二。');
 });

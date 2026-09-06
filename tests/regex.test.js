@@ -46,7 +46,7 @@ test('empty matches, invalid syntax and pathological regex are rejected without 
   assert.equal((await scanPrepared('死死地', [rule('死死地')])).count, 1);
 });
 
-test('auto edits only eligible occurrences inside mixed sentences; conflict remains for review', async () => {
+test('auto edits only eligible occurrences and a chosen overlap applies without yellow conflict', async () => {
   const rules = [rule('死死地?', [], { execution: 'auto' }), rule('极其', ['很'])];
   const r = await scanPrepared('他死死地抓住她，极其紧张。', rules);
   assert.equal(applySelected(r, { automatic: true }), 1);
@@ -56,9 +56,9 @@ test('auto edits only eligible occurrences inside mixed sentences; conflict rema
   assert.equal(r.log.length, 1); assert.equal(r.log[0].automatic, true);
   applySelected(r); assert.equal(r.expected, '他抓住她，很紧张。');
   assert.equal(r.log.length, 2); assert.equal(r.log[1].automatic, false);
-  const conflict = await scanPrepared('他死死地抓住。', [rule('死死地?', [], { execution: 'auto' }), rule('死死地', ['紧紧'])]);
-  assert.equal(applySelected(conflict, { automatic: true }), 0);
-  assert.equal(conflict.expected, conflict.base);
+  const conflict = await scanPrepared('他死死地抓住。', [rule('死死地?', [], { execution: 'auto' }), rule('死死地', ['紧紧'])], { random: () => 0 });
+  assert.equal(applySelected(conflict, { automatic: true }), 1);
+  assert.equal(conflict.expected, '他抓住。');
 });
 
 test('editor preserves old punctuation and batches support random candidates', () => {

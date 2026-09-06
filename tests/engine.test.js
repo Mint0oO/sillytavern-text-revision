@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DEFAULT_RULES, scan, proposal, applySelected, validateRule, inlineHTML, parseRuleValues, formatRuleValues } from '../engine.js';
 const detect = text => scan(text, DEFAULT_RULES, { random: () => 0 });
+const sequence = (...values) => { let i = 0; return () => values[Math.min(i++, values.length - 1)]; };
 
 test('groups follow source order; partial application preserves unchecked sentences and whitespace', () => {
   const source = '你极其疲惫。\n\n空位极具吸引力。\n中间没有问题。\n他极度不安，极其僵硬。';
@@ -34,10 +35,52 @@ test('code, reasoning, links and markup attributes are excluded; rendered text i
   const injected = scan('测试。', [{ find: '测试', values: ['<img src=x onerror=alert(1)>'], action: 'replace' }]);
   assert.ok(inlineHTML(injected.groups[0]).includes('&lt;img'));
 });
-test('overlapping rules flag a single unresolved span without duplicate deletion', () => {
+test('overlapping and containing deletions merge without a conflict', () => {
   const a = validateRule({ find: '极其疲惫', remove: true, action: 'delete' });
   const r = scan('你极其疲惫。', [DEFAULT_RULES[0], a]);
-  assert.equal(r.count, 1); assert.equal(proposal(r.groups[0]), '你极其疲惫。');
+  assert.equal(r.count, 1); assert.equal(r.groups[0].matches[0].ruleFind, '极其疲惫');
+  assert.equal(proposal(r.groups[0]), '你。');
+
+  const partial = scan('甲乙丙丁。', [
+    { find: '甲乙丙', remove: true, action: 'delete' },
+    { find: '乙丙丁', remove: true, action: 'delete' },
+  ]);
+  assert.equal(partial.count, 2); assert.equal(proposal(partial.groups[0]), '。');
+  assert.equal(inlineHTML(partial.groups[0]), '<del>甲乙丙丁</del>。');
+  applySelected(partial); assert.equal(partial.expected, '。'); assert.equal(partial.log.length, 2);
+
+  const separate = scan('甲乙丙丁。', [
+    { find: '甲', remove: true, action: 'delete' },
+    { find: '丙', remove: true, action: 'delete' },
+  ]);
+  assert.equal(proposal(separate.groups[0]), '乙丁。');
+});
+
+test('incompatible overlaps choose one stable coherent result by priority then random order', () => {
+  const remove = { find: '甲乙', remove: true, action: 'delete' };
+  const replace = { find: '甲乙', values: ['新'], action: 'replace' };
+  const deleted = scan('甲乙。', [remove, replace], { random: sequence(0, .1, .9) });
+  const replaced = scan('甲乙。', [remove, replace], { random: sequence(0, .9, .1) });
+  assert.equal(proposal(deleted.groups[0]), '。');
+  assert.equal(proposal(replaced.groups[0]), '新。');
+  assert.equal(proposal(replaced.groups[0]), '新。');
+  assert.doesNotMatch(inlineHTML(deleted.groups[0]), /<mark/);
+
+  const priority = scan('甲乙。', [remove, { ...replace, priority: 10 }], { random: () => 0 });
+  assert.equal(proposal(priority.groups[0]), '新。');
+
+  const replacements = scan('甲。', [
+    { find: '甲', values: ['一'], action: 'replace' },
+    { find: '甲', values: ['二'], action: 'replace' },
+  ], { random: sequence(0, 0, .9, .1) });
+  assert.equal(proposal(replacements.groups[0]), '二。');
+
+  const set = scan('甲乙丙丁戊。', [
+    { find: '甲乙', remove: true, action: 'delete' },
+    { find: '乙丙丁', values: ['中'], action: 'replace' },
+    { find: '丁戊', remove: true, action: 'delete' },
+  ], { random: sequence(0, .1, .9, .2) });
+  assert.equal(proposal(set.groups[0]), '丙。');
 });
 test('invalid capture templates and unknown replacement captures cannot be saved', () => {
   for (const find of ['{A}', '像{A}{B}一样', '像{A}的{A}一样']) assert.throws(() => validateRule({ find, kind: 'pattern' }));

@@ -2,7 +2,7 @@
 import { analyzeWords, acceptsWord, CAPTURE_TYPES } from './language.js';
 import { sentenceSpans, revisionSpans } from './sentences.js';
 import { parseRegex, replacementParts } from './regex-support.js';
-export const ENGINE_VERSION = 5;
+export const ENGINE_VERSION = 6;
 export const DEFAULT_RULES = [
   { id: 'very', find: '极其', kind: 'word', values: ['十分', '非常'], remove: true, action: 'delete', enabled: true },
   { id: 'possess', find: '极具', kind: 'word', values: ['很有', '有'], remove: false, action: 'replace', enabled: true },
@@ -234,14 +234,76 @@ export function proposal(group) {
   if (group.kept) return group.applied ?? group.original;
   if (group.manual) return group.draft;
   let text = group.original;
-  for (const match of [...group.matches].reverse()) {
-    const result = replacement(match);
-    if (result !== null) text = text.slice(0, match.start) + result + text.slice(match.end);
-  }
+  for (const edit of editOperations(group)) text = text.slice(0, edit.start) + edit.result + text.slice(edit.end);
   return text;
 }
 export const ready = g => !g.kept && proposal(g) !== (g.applied ?? g.original);
 export const processed = round => round.groups.reduce((n, g) => n + g.matches.filter(m => m.done).length, 0);
+
+const overlaps = (a, b) => a.start < b.end && b.start < a.end;
+
+// Build edits from right to left so every offset continues to refer to the
+// original sentence. Overlapping deletions are one compatible union.
+function editOperations(group, includeUnresolved = false) {
+  const edits = [];
+  for (const match of [...group.matches].sort((a, b) => a.start - b.start || b.end - a.end)) {
+    const result = replacement(match);
+    if (result === null && !includeUnresolved) continue;
+    const previous = edits.at(-1);
+    if (result === '' && previous?.result === '' && match.start < previous.end) {
+      previous.end = Math.max(previous.end, match.end);
+      previous.old = group.original.slice(previous.start, previous.end);
+      previous.matches.push(match);
+    } else edits.push({ start: match.start, end: match.end, old: group.original.slice(match.start, match.end), result, matches: [match] });
+  }
+  return edits.reverse();
+}
+
+function unresolvedOverlap(component, sentence) {
+  const start = Math.min(...component.map(m => m.start));
+  const end = Math.max(...component.map(m => m.end));
+  return { ...component[0], start, end, coreEnd: end, old: sentence.slice(start, end), value: null, options: [], remove: false, action: 'review', reason: '多条规则重叠，请手动修改。', execution: 'review', trailing: '' };
+}
+
+function resolveOverlaps(found, sentence, random) {
+  const ordered = [...found].sort((a, b) => a.start - b.start || b.end - a.end);
+  const components = [];
+  for (const match of ordered) {
+    const current = components.at(-1);
+    if (current && match.start < current.end) {
+      current.matches.push(match);
+      current.end = Math.max(current.end, match.end);
+    } else components.push({ end: match.end, matches: [match] });
+  }
+
+  const resolved = [];
+  for (const { matches: component } of components) {
+    if (component.length === 1) { resolved.push(component[0]); continue; }
+    // Review-only rules have no executable outcome, so keep their overlapping
+    // component visible instead of silently discarding the warning.
+    if (component.some(m => m.action === 'review' || m.value === null)) {
+      resolved.push(unresolvedOverlap(component, sentence));
+      continue;
+    }
+
+    // Higher priority wins incompatible overlaps. Equal-priority candidates
+    // are shuffled once per scan; the resulting coherent set stays stable.
+    const ranked = component.map(match => ({ match, tie: random() }))
+      .sort((a, b) => b.match.priority - a.match.priority || a.tie - b.tie);
+    const accepted = [];
+    for (const { match } of ranked) {
+      if (!accepted.some(other => overlaps(match, other) && !(match.action === 'delete' && other.action === 'delete'))) accepted.push(match);
+    }
+
+    // A containing deletion already performs the smaller deletion completely.
+    for (const match of accepted) {
+      if (match.action === 'delete' && accepted.some(other => other !== match && other.action === 'delete' && other.start <= match.start && other.end >= match.end && (other.start < match.start || other.end > match.end))) continue;
+      resolved.push(match);
+    }
+  }
+  return resolved.sort((a, b) => a.start - b.start || b.end - a.end);
+}
+
 export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now(), scope, analyze = analyzeWords, regexMatches } = {}) {
   if (typeof text !== 'string' || text.length > LIMITS.text) throw new Error('单条回复超过 20 万字，暂不检测。');
   if (rules.length > LIMITS.rules) throw new Error('最多启用 200 条规则。');
@@ -294,33 +356,13 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
         const atEnd = rule.reviewAtEnd && /^[\s，,。.!！？?；;…"'”’」』）)\]］】〕〉》]*$/u.test(suffix);
         const trailing = rule.remove && rule.punctuation === 'following-comma' ? suffix.match(/^[ \t]*[，,][ \t]*/)?.[0] ?? '' : '';
         const coreEnd = m.index + m[0].length;
-        found.push({ start: m.index, end: coreEnd + trailing.length, coreEnd, old: m[0] + trailing, trailing, reviewAtEnd: rule.reviewAtEnd, priority: rule.priority, ruleId: rule.id, ruleFind: rule.find, execution: rule.execution, resolved: rule.kind === 'regex', captures: m.captures ?? Object.fromEntries(keys.map((k, i) => [k, m[i + 1]])), options: values, remove: rule.remove, value: atEnd && choice === '' ? null : choice, generic, reason: atEnd && choice === '' ? '句式删除后可能不完整，请手动修改。' : '', done: false });
+        found.push({ start: m.index, end: coreEnd + trailing.length, coreEnd, old: m[0] + trailing, trailing, reviewAtEnd: rule.reviewAtEnd, priority: rule.priority, ruleId: rule.id, ruleFind: rule.find, action: rule.action, execution: rule.execution, resolved: rule.kind === 'regex', captures: m.captures ?? Object.fromEntries(keys.map((k, i) => [k, m[i + 1]])), options: values, remove: rule.remove, value: atEnd && choice === '' ? null : choice, generic, reason: atEnd && choice === '' ? '句式删除后可能不完整，请手动修改。' : '', done: false });
         if (found.length > LIMITS.matches) throw new Error('匹配过多，请缩小规则范围后重试。');
       }
     }
     // A specific template wins over the generic template covering the same span.
     found = found.filter(m => !m.generic || !found.some(n => !n.generic && n.priority >= m.priority && n.start === m.start && n.end === m.end));
-    // Resolve priority before merging conflicts. Equal-priority overlaps remain reviewable.
-    const preferred = [];
-    for (const match of [...found].sort((a, b) => b.priority - a.priority)) {
-      if (!preferred.some(m => m.priority > match.priority && m.start < match.end && match.start < m.end)) preferred.push(match);
-    }
-    found = preferred;
-    found.sort((a, b) => a.start - b.start || b.end - a.end);
-    const matches = [];
-    for (const match of found) {
-      const previous = matches.at(-1);
-      if (previous && match.start < previous.end) {
-        previous.end = Math.max(previous.end, match.end);
-        previous.old = sentence.text.slice(previous.start, previous.end);
-        previous.value = null;
-        previous.options = [];
-        previous.remove = false;
-        previous.reason = '多条规则重叠，请手动修改。';
-        previous.execution = 'review';
-        previous.trailing = '';
-      } else matches.push(match);
-    }
+    const matches = resolveOverlaps(found, sentence.text, random);
     if (!matches.length) continue;
     matches.forEach((m, i) => { m.id = i; });
     const group = { id: groups.length, start: sentence.index, end: sentence.index + sentence.text.length, original: sentence.text, matches, manual: false, draft: '', applied: null, kept: false, selected: true };
@@ -381,15 +423,15 @@ export function inlineHTML(group) {
   if (group.kept) return escapeHTML(group.applied ?? group.original);
   if (group.manual) return diffHTML(group.original, group.draft);
   let result = '', cursor = 0;
-  for (const m of group.matches) {
-    result += escapeHTML(group.original.slice(cursor, m.start));
-    const next = replacement(m);
-    if (next === null) result += `<mark title="${escapeHTML(m.reason || '请手动修改或选择候选')}">${escapeHTML(m.old)}</mark>`;
-    else if (/^\{[A-Z]\}$/.test(m.value) && next && !m.trailing) {
-      const at = m.value === '{A}' ? m.old.indexOf(next) : m.old.lastIndexOf(next);
-      result += `<del>${escapeHTML(m.old.slice(0, at))}</del>${escapeHTML(next)}<del>${escapeHTML(m.old.slice(at + next.length))}</del>`;
-    } else result += diffHTML(m.old, next);
-    cursor = m.end;
+  for (const edit of editOperations(group, true).reverse()) {
+    result += escapeHTML(group.original.slice(cursor, edit.start));
+    const m = edit.matches[0], next = edit.result;
+    if (next === null) result += `<mark title="${escapeHTML(m.reason || '请手动修改或选择候选')}">${escapeHTML(edit.old)}</mark>`;
+    else if (edit.matches.length === 1 && /^\{[A-Z]\}$/.test(m.value) && next && !m.trailing) {
+      const at = m.value === '{A}' ? edit.old.indexOf(next) : edit.old.lastIndexOf(next);
+      result += `<del>${escapeHTML(edit.old.slice(0, at))}</del>${escapeHTML(next)}<del>${escapeHTML(edit.old.slice(at + next.length))}</del>`;
+    } else result += diffHTML(edit.old, next);
+    cursor = edit.end;
   }
   return result + escapeHTML(group.original.slice(cursor));
 }

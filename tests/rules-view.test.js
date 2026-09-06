@@ -21,6 +21,9 @@ test('rules show a compact summary until their editor is expanded', () => {
   assert.match(collapsed, /fa-file-export/);
   assert.match(collapsed, /fa-file-import/);
   assert.match(collapsed, /id="tr-rule-import-file"/);
+  assert.ok(collapsed.indexOf('data-action="new-rule"') < collapsed.indexOf('data-action="import-rules"'));
+  assert.ok(collapsed.indexOf('data-action="import-rules"') < collapsed.indexOf('data-action="export-rules"'));
+  assert.match(collapsed, /＋ 新增/);
   assert.match(collapsed, new RegExp(`title="${find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
   assert.doesNotMatch(collapsed, />不是\(\[\^/);
 

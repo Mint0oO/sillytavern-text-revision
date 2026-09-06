@@ -71,8 +71,9 @@ test('context filters and priority let specific rules win without applying the f
   assert.equal(revise('他极度渴望。她极度渴望。', [{ ...targeted, before: ['他'] }]), '他深深地渴望。她极度渴望。');
   const ex = { ...fallback, exceptions: ['极度疲惫'] };
   assert.equal(revise('极度疲惫，极度兴奋。', [ex]), '极度疲惫，很兴奋。');
-  const overlap = scan('极度渴望。', [fallback, { ...targeted, priority: 0 }]);
-  assert.equal(overlap.groups[0].selected, false);
+  const overlap = scan('极度渴望。', [fallback, { ...targeted, priority: 0 }], { random: () => 0 });
+  assert.equal(overlap.groups[0].selected, true);
+  assert.equal(proposal(overlap.groups[0]), '很渴望。');
 });
 
 test('A/B/C captures can be retained or reordered; explicit word lists need no analyzer', () => {
