@@ -5,6 +5,7 @@ import { createRuleDraft, simpleRule, bulkRules } from './rule-editor.js';
 import { renderRulesView } from './rules-view.js';
 import { scanPrepared } from './scanner.js';
 import { renderRuleForm } from './rule-form.js';
+import { stringifyRuleSet, parseRuleSet, applyRuleSet, MAX_RULE_SET_BYTES } from './rule-transfer.js';
 
 const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
 const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
@@ -22,6 +23,7 @@ export class RevisionUI {
     this.ruleDrafts = new Map();
     this.historical = null;
     this.scopeDraft = null;
+    this.ruleImport = null;
     this.returnFocus = null;
     this.dialog = document.createElement('dialog');
     this.dialog.id = 'tr-root';
@@ -31,11 +33,21 @@ export class RevisionUI {
     // New-rule editor lives in its own nested modal instead of the rules list.
     this.ruleModal = document.createElement('dialog');
     this.ruleModal.id = 'tr-rule-modal';
+    this.ruleModal.className = 'tr-submodal';
     this.ruleModal.innerHTML = `<div class="tr-modal-shell"><header class="tr-modal-head"><h3>新建规则</h3>${icon('xmark', '关闭新建规则', 'data-action="cancel-rule"')}</header><div class="tr-modal-body"></div></div>`;
     this.dialog.append(this.ruleModal);
     this.ruleModal.addEventListener('close', () => {
       this.ruleModal.querySelector('.tr-modal-body').innerHTML = '';
       if (this.ruleId === 'new') { this.ruleDrafts.delete('new'); this.ruleId = null; }
+    });
+    this.importModal = document.createElement('dialog');
+    this.importModal.id = 'tr-import-modal';
+    this.importModal.className = 'tr-submodal';
+    this.importModal.innerHTML = `<div class="tr-modal-shell"><header class="tr-modal-head"><h3>导入规则集</h3>${icon('xmark', '关闭导入规则集', 'data-action="cancel-import"')}</header><div class="tr-modal-body"></div></div>`;
+    this.dialog.append(this.importModal);
+    this.importModal.addEventListener('close', () => {
+      this.importModal.querySelector('.tr-modal-body').innerHTML = '';
+      this.ruleImport = null;
     });
     this.launcher = document.createElement('button');
     this.launcher.id = 'tr-launcher';
@@ -216,6 +228,41 @@ export class RevisionUI {
   rulesView() {
     this.body(renderRulesView(this.c.settings().rules, this.ruleFilters, this.ruleId, () => this.ruleForm(), this.bulkDraft, this.c.settings().ruleExecution));
   }
+  exportRules() {
+    const text = stringifyRuleSet(this.c.settings());
+    const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `henge-rules-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    this.say(`已导出 ${this.c.settings().rules.length} 条规则。文件不包含聊天、记录或其他设置。`);
+  }
+  async openRuleImport(file) {
+    if (file.size > MAX_RULE_SET_BYTES) throw new Error('JSON 文件超过 25 MB，无法导入。');
+    const imported = parseRuleSet(await file.text());
+    this.ruleImport = imported;
+    const mode = imported.ruleExecution === 'auto' ? '回复结束后自动应用' : '先审阅，再应用';
+    const examples = imported.rules.slice(0, 5).map(rule => `<li>${esc(rule.find)}</li>`).join('');
+    this.importModal.querySelector('.tr-modal-body').innerHTML = `<p><strong>${esc(file.name)}</strong></p><p>共 ${imported.rules.length} 条规则 · 处理方式：${mode}</p>${examples ? `<ul class="tr-import-list">${examples}</ul>${imported.rules.length > 5 ? `<p class="tr-meta">另有 ${imported.rules.length - 5} 条规则未在这里展开。</p>` : ''}` : '<p class="tr-meta">这是一个空规则集。</p>'}<p class="tr-meta">追加：保留现有规则和当前处理方式，跳过重复规则。<br>替换全部：清除现有规则，并采用文件中的处理方式。</p><div class="tr-form-actions"><button type="button" data-action="cancel-import">取消</button><button type="button" data-action="import-append" ${imported.rules.length ? '' : 'disabled'}>追加</button><button type="button" class="tr-primary" data-action="import-replace">替换全部</button></div>`;
+    if (!this.importModal.open) this.importModal.showModal();
+  }
+  importRules(mode) {
+    if (!this.ruleImport) throw new Error('请重新选择要导入的 JSON 文件。');
+    const settings = this.c.settings();
+    const result = applyRuleSet(settings.rules, this.ruleImport, mode);
+    settings.rules = result.rules;
+    if (result.ruleExecution) settings.ruleExecution = result.ruleExecution;
+    this.c.saveSettings();
+    this.ruleId = null;
+    this.ruleDrafts.clear();
+    this.importModal.close();
+    this.render();
+    const skipped = result.skipped ? `，跳过 ${result.skipped} 条重复规则` : '';
+    this.say(`${mode === 'append' ? '已追加' : '已替换'} ${result.added} 条规则${skipped}。重新检测后生效。`);
+  }
   ruleForm() {
     if (!this.ruleDrafts.has(this.ruleId)) this.ruleDrafts.set(this.ruleId, createRuleDraft(this.c.settings().rules.find(r => r.id === this.ruleId)));
     return renderRuleForm(this.ruleDrafts.get(this.ruleId));
@@ -340,6 +387,11 @@ export class RevisionUI {
         if (rules.length + added.length > 200) throw new Error('添加后超过 200 条规则，请减少数量。');
         rules.push(...added); this.c.saveSettings(); this.bulkDraft.text = ''; this.render(); this.say(`已添加 ${added.length} 条规则，重复项已跳过。`); break;
       }
+      case 'export-rules': this.exportRules(); break;
+      case 'import-rules': this.dialog.querySelector('#tr-rule-import-file')?.click(); break;
+      case 'cancel-import': this.importModal.close(); break;
+      case 'import-append': this.importRules('append'); break;
+      case 'import-replace': this.importRules('replace'); break;
       case 'preview-rule': await this.previewRule(); break;
       case 'add-pair':
         if (this.scopeDraft.excludeRules.length >= 50) throw new Error('内容排除最多设置 50 条。');
@@ -400,6 +452,12 @@ export class RevisionUI {
   }
   async change(e) {
     const el = e.target;
+    if (el.id === 'tr-rule-import-file') {
+      const file = el.files?.[0];
+      el.value = '';
+      if (file) await this.openRuleImport(file);
+      return;
+    }
     if (el.dataset.ruleField || el.dataset.ruleFilter || el.dataset.bulkField) this.input(e);
     if (el.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[el.dataset.ruleField] = el.type === 'checkbox' ? el.checked : el.value;
     if (el.id === 'tr-launcher-color') { this.c.settings().launcherColor = el.value; this.launcherTheme(); this.c.saveSettings(); }

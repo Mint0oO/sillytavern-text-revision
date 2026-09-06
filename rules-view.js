@@ -1,6 +1,7 @@
 import { escapeHTML as esc } from './engine.js';
 import { isLegacyRule } from './rule-editor.js';
 const button = (text, attrs) => `<button type="button" ${attrs}>${text}</button>`;
+const hostIcon = (name, label, action) => button(`<i class="fa-solid fa-${name}" aria-hidden="true"></i>`, `class="tr-icon" data-action="${action}" aria-label="${label}" title="${label}"`);
 
 // Keep collapsed rules readable on narrow screens. Regex groups often contain
 // implementation details rather than words a reader needs while browsing.
@@ -58,7 +59,7 @@ export function renderRulesView(all, f, ruleId, form, d, execution = 'review') {
     return `<section class="tr-rule-section"><div class="tr-rule-row">${button(`<span class="tr-rule-find" title="${esc(r.find)}">${esc(visibleFind)}</span><span class="tr-meta">${action} ${expanded ? '⌃' : '⌄'}</span>`, `class="tr-rule" data-rule="${esc(r.id)}" aria-expanded="${expanded}" aria-label="${expanded ? '收起' : '展开并编辑'}规则：${esc(r.find)}"`)}<label class="tr-select"><input type="checkbox" data-rule-enabled="${esc(r.id)}" aria-label="启用规则：${esc(r.find)}" ${r.enabled !== false ? 'checked' : ''}></label></div>${expanded ? form() : ''}</section>`;
   };
   const current = rules.filter(r => !isLegacyRule(r)), legacy = rules.filter(isLegacyRule);
-  return `<div class="tr-bar"><span>${rules.length} / ${all.length} 条规则</span>${button('＋ 新建', 'data-action="new-rule"')}</div>
+  return `<div class="tr-bar"><span>${rules.length} / ${all.length} 条规则</span><div class="tr-rule-tools">${hostIcon('file-export', '导出 JSON 规则集', 'export-rules')}${hostIcon('file-import', '导入 JSON 规则集', 'import-rules')}${button('＋ 新建', 'data-action="new-rule"')}</div></div><input id="tr-rule-import-file" type="file" accept=".json,application/json" hidden>
     <label class="tr-field">新格式规则的处理方式<select id="tr-rule-execution"><option value="review" ${execution === 'review' ? 'selected' : ''}>先审阅，再应用</option><option value="auto" ${execution === 'auto' ? 'selected' : ''}>回复结束后自动应用</option></select></label>
     <input data-rule-filter="search" aria-label="搜索规则" placeholder="搜索查找或替换内容" value="${esc(f.search)}">
     ${current.map(row).join('')}

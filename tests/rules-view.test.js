@@ -16,6 +16,11 @@ test('rules show a compact summary until their editor is expanded', () => {
   const rule = { id: 'sentence', kind: 'regex', editorVersion: 1, find, values: ['$2'], action: 'replace' };
   const collapsed = renderRulesView([rule], { search: '' }, null, () => '<form></form>', { text: '' });
   assert.match(collapsed, />不是…，而是…</);
+  assert.match(collapsed, /data-action="export-rules"/);
+  assert.match(collapsed, /data-action="import-rules"/);
+  assert.match(collapsed, /fa-file-export/);
+  assert.match(collapsed, /fa-file-import/);
+  assert.match(collapsed, /id="tr-rule-import-file"/);
   assert.match(collapsed, new RegExp(`title="${find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
   assert.doesNotMatch(collapsed, />不是\(\[\^/);
 
