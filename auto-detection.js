@@ -13,12 +13,12 @@ export function attachAutoDetection(c, ui, clock = { setTimeout: (fn, delay) => 
   };
   const schedule = id => {
     const context = c.context(), m = context.chat[id];
-    if (!c.settings().autoScan || !isReply(m)) return;
+    if (c.settings().enabled === false || !c.settings().autoScan || !isReply(m)) return;
     pending.set(Number(id), { key: chatKey(context), message: m, text: m.mes, swipe: swipeId(m), epoch });
     arm();
   };
   async function flush() {
-    if (!c.settings().autoScan) { clear(); return; }
+    if (c.settings().enabled === false || !c.settings().autoScan) { clear(); return; }
     if (c.busy || running) { arm(); return; }
     running = true;
     try {

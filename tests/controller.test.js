@@ -13,9 +13,18 @@ function fixture() {
 
 test('fresh settings use simple regex rules without legacy template controls', () => {
   const settings = fixture().ctl.settings();
+  assert.equal(settings.enabled, true);
   assert.equal(settings.ruleExecution, 'review');
   assert.ok(settings.rules.length > 0);
   assert.ok(settings.rules.every(r => r.editorVersion === 1 && r.kind === 'regex' && r.execution === 'inherit'));
+});
+
+test('global plugin switch stops detection and invalidates pending review results', async () => {
+  const f = fixture(), round = await f.ctl.detect();
+  f.ctl.settings().enabled = false;
+  assert.equal(f.ctl.editable(round), false);
+  await assert.rejects(f.ctl.detect(), /插件已停用/);
+  await assert.rejects(f.ctl.commit(round), /已过期/);
 });
 
 test('shared execution changes invalidate old suggestions and automatic saves survive reload and undo', async () => {
@@ -236,6 +245,17 @@ test('manual apply dismisses remaining suggestions while all-kept review writes 
   const before = f.ctx.chat[0].mes; await f.ctl.finishReview(r);
   assert.equal(r.reviewed, true); assert.equal(f.ctx.chat[0].mes, before);
   const fresh = await f.ctl.detect(); assert.notEqual(fresh.reviewed, true);
+});
+
+test('an empty manual draft deletes the complete detected sentence and undo restores it', async () => {
+  const f = fixture(), r = await f.ctl.detect(), group = r.groups[0];
+  r.groups.slice(1).forEach(g => { g.selected = false; });
+  group.manual = true; group.draft = ''; group.selected = true;
+  await f.ctl.commit(r);
+  assert.equal(f.disk()[0].mes, '空位极具吸引力。');
+  assert.deepEqual(r.log.at(-1), { before: '你极其疲惫。', after: '', rule: '手动编辑整句', automatic: false });
+  await f.ctl.commit(r, { undo: true });
+  assert.equal(f.disk()[0].mes, '你极其疲惫。空位极具吸引力。');
 });
 
 test('failed automatic save retains the original, retryable proposal and unread status', async () => {

@@ -3,6 +3,7 @@ import { parseRegex } from './regex-support.js';
 
 export function isLegacyRule(rule) {
   return rule && (rule.kind === 'pattern' || rule.action === 'review' || rule.reviewAtEnd
+    || rule.editorVersion === 1 && rule.replacementMode === 'text'
     || rule.kind === 'word' && (rule.values ?? []).some(value => value.includes('{{'))
     || rule.punctuation === 'following-comma' || Number(rule.priority ?? 0) !== 0
     || ['before', 'after', 'notBefore', 'exceptions'].some(key => parseConditionWords(rule[key]).length));

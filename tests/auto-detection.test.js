@@ -51,6 +51,16 @@ test('busy saves defer a scan; disabled auto-scan and clean output do not open t
   assert.equal(f.c.current().count, 0); assert.equal(f.opens(), 1);
 });
 
+test('global plugin switch suppresses automatic detection', async () => {
+  const f = fixture();
+  f.c.settings().enabled = false;
+  f.emit('CHARACTER_MESSAGE_RENDERED', 0); await f.flush();
+  assert.equal(f.c.history().length, 0); assert.equal(f.opens(), 0);
+  f.c.settings().enabled = true;
+  f.emit('CHARACTER_MESSAGE_RENDERED', 0); await f.flush();
+  assert.equal(f.c.history().length, 1); assert.equal(f.opens(), 1);
+});
+
 test('fully automatic rules save quietly once, and a higher-priority review overlap remains visible', async () => {
   const f = fixture();
   f.ctx.updateMessageBlock = () => {}; f.ctx.eventSource.emit = async () => {};

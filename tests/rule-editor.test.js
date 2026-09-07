@@ -87,5 +87,16 @@ test('form has always-visible find/replacement without template or action settin
   assert.match(html, /data-rule-field="find"/);
   assert.match(html, /data-rule-field="valuesText"/);
   assert.doesNotMatch(html, /data-rule-field="(?:mode|action|category|priority|execution|captures|before|boundary|punctuation)"/);
-  assert.doesNotMatch(html, /单个形容词|附加条件|句式助手/);
+  assert.doesNotMatch(html, /单个形容词|附加条件|句式助手|wholeReplacement|整段替换|写法示例|>测试文字</);
+  assert.match(html, /留空为删除/);
+  assert.doesNotMatch(html, /data-action="cancel-rule"|删除此规则/);
+  assert.match(renderRuleForm(createRuleDraft(), { canDelete: true }), /data-action="delete-current-rule"/);
+});
+
+test('old whole-text replacements remain compatible but are read-only in the editor', () => {
+  const old = make('旧', ' $&, 保留 ', { wholeReplacement: true });
+  assert.equal(isLegacyRule(old), true);
+  const html = renderRuleForm(createRuleDraft(old));
+  assert.match(html, /兼容规则/);
+  assert.match(html, /readonly/);
 });

@@ -8,7 +8,7 @@ export const clone = value => structuredClone(value);
 export const chatKey = c => JSON.stringify([c.groupId ?? null, c.characterId ?? null, c.chatId ?? c.getCurrentChatId?.()]);
 export const swipeId = m => m.swipe_id ?? 0;
 export const isReply = m => m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim();
-const rulesKey = settings => JSON.stringify([settings.ruleExecution ?? 'review', settings.rules]);
+const rulesKey = settings => JSON.stringify([settings.enabled !== false, settings.ruleExecution ?? 'review', settings.rules]);
 
 export class RevisionController {
   constructor(getContext, verifySave, prepareLanguage = ensureLanguage) {
@@ -44,8 +44,9 @@ export class RevisionController {
     s.theme ??= 'light';
     s.appearance ??= 'minimal';
     s.appearanceEnabled ??= true;
+    s.enabled ??= true;
     s.palette ??= 'soft';
-    s.transparency ??= 0;
+    s.transparency = Math.max(0, Math.min(100, Number(s.transparency) || 0));
     s.autoScan ??= true;
     s.ruleExecution ??= 'review';
     s.showLauncher ??= false;
@@ -83,11 +84,12 @@ export class RevisionController {
     return m;
   }
   editable(round) {
-    try { this.target(round); return round.engineVersion === ENGINE_VERSION && round.rulesKey === rulesKey(this.settings()) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
+    try { this.target(round); return this.settings().enabled !== false && round.engineVersion === ENGINE_VERSION && round.rulesKey === rulesKey(this.settings()) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
     catch { return false; }
   }
   async detect(messageId = this.latestReply(), { auto = false } = {}) {
     this.assertIdle();
+    if (this.settings().enabled === false) throw new Error('插件已停用，请先在设置中启用。');
     const c = this.context(), m = c.chat[messageId];
     if (!c.chatId && !c.getCurrentChatId?.()) throw new Error('请先打开并保存一个聊天。');
     if (!isReply(m)) throw new Error('当前没有可检测的 AI 回复。');
