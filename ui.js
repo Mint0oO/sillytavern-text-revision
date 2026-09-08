@@ -10,6 +10,7 @@ import { stringifyRuleSet, parseRuleSet, applyRuleSet, MAX_RULE_SET_BYTES } from
 const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
 const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : name === 'chevron-down' ? '<path d="m6 9 6 6 6-6"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
 const icon = (name, label, attrs) => button(glyph(name), `aria-label="${label}" class="tr-icon" ${attrs}`);
+const dismissActions = new Set(['close', 'cancel-rule', 'cancel-import', 'cancel-scope']);
 
 export class RevisionUI {
   constructor(controller) {
@@ -66,9 +67,7 @@ export class RevisionUI {
       this.scopeMode = null;
     });
     this.scopeModal.addEventListener('cancel', e => { e.preventDefault(); this.scopeModal.close(); });
-    // Subdialogs are promoted into the browser's top layer. Handle their
-    // controls directly instead of depending on a click reaching the parent
-    // dialog, which is unreliable in some mobile hosts.
+    // Keep subdialog controls scoped to their own event handler.
     for (const modal of [this.ruleModal, this.importModal, this.scopeModal]) {
       modal.addEventListener('click', e => { e.stopPropagation(); this.run(() => this.click(e)); });
       modal.addEventListener('input', e => { e.stopPropagation(); this.input(e); });
@@ -89,6 +88,7 @@ export class RevisionUI {
     });
     document.body.append(this.launcher);
     this.attachLauncherDrag();
+    this.dialog.addEventListener('pointerdown', e => this.pointerDown(e));
     this.dialog.addEventListener('click', e => this.run(() => this.click(e)));
     this.dialog.addEventListener('input', e => this.input(e));
     this.dialog.addEventListener('change', e => this.run(() => this.change(e)));
@@ -109,6 +109,7 @@ export class RevisionUI {
       this.dialog.style.setProperty('--tr-modal-height', `${Math.max(1, height - 32)}px`);
     };
     window.visualViewport?.addEventListener('resize', this.viewport);
+    window.visualViewport?.addEventListener('scroll', this.viewport);
     this.viewport();
     this.theme();
     this.badge();
@@ -225,13 +226,14 @@ export class RevisionUI {
     this.dialog.querySelector('.tr-foot').innerHTML = '';
     const draw = { review: 'review', snapshot: 'review', rules: 'rulesView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
     this[draw]();
-    if (this.c.busy) this.dialog.querySelectorAll('button:not([data-action="close"]), input, select, textarea').forEach(el => { el.disabled = true; });
+    if (this.c.busy) this.dialog.querySelectorAll('button, input, select, textarea').forEach(el => { if (!dismissActions.has(el.dataset.action)) el.disabled = true; });
     this.dialog.querySelector('.tr-main').scrollTop = scroll;
     this.badge();
   }
   body(html) { this.dialog.querySelector('.tr-main').innerHTML = html; }
   legend() { return '<div class="tr-legend"><del>删除</del><ins>新增</ins><mark>待改</mark></div>'; }
   review() {
+    this.reviewSelection = null;
     if (this.c.settings().enabled === false) { this.body('<div class="tr-empty">插件已停用。可以在“设置”中重新启用。</div>'); return; }
     const history = this.screen === 'snapshot';
     const r = history ? this.c.history().find(r => r.id === this.historical) : this.c.current();
@@ -239,10 +241,17 @@ export class RevisionUI {
     const editable = !history && this.c.editable(r);
     this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${r.reviewed ? '<p class="tr-meta">本轮已完成审阅，保留项不再提醒。</p>' : ''}${!editable && !history ? '<p class="tr-meta">正文或检测范围已变化，请重新检测。</p>' : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
     if (r.log?.length) this.dialog.querySelector('.tr-main').insertAdjacentHTML('beforeend', `<details class="tr-change-log"><summary>修改日志 · ${r.log.length} 处</summary>${r.log.map(entry => `<p class="tr-meta">${entry.automatic ? '自动' : '手动'} · ${esc(entry.rule)}</p><p class="tr-sentence"><del>${esc(entry.before)}</del> → <ins>${esc(entry.after || '（删除）')}</ins></p>`).join('')}</details>`);
-    if (!history) {
-      const eligible = r.groups.filter(ready), n = this.c.selectedCount(r);
-      this.dialog.querySelector('.tr-foot').innerHTML = `<label class="tr-check"><input type="checkbox" data-all ${eligible.length && eligible.length === n ? 'checked' : ''} ${!editable || !eligible.length ? 'disabled' : ''}>全选</label><div>${editable && !r.reviewed && !this.edit ? button('完成审阅', 'data-action="finish-review"') : ''}${r.undo && editable ? button('撤销', 'data-action="undo"') : ''}${button(`应用所选 ${n}`, `class="tr-primary" data-action="apply" ${!editable || !n || this.edit ? 'disabled' : ''}`)}</div>`;
+    if (!history) this.reviewFooter(r, editable);
+  }
+  selectionState(r) {
+    if (this.reviewSelection?.round !== r) {
+      this.reviewSelection = { round: r, rows: new Map(r.groups.filter(ready).map(g => [g.id, Boolean(g.selected)])) };
     }
+    return this.reviewSelection.rows;
+  }
+  reviewFooter(r, editable) {
+    const rows = this.selectionState(r), n = [...rows.values()].filter(Boolean).length;
+    this.dialog.querySelector('.tr-foot').innerHTML = `<label class="tr-check"><input type="checkbox" data-all ${rows.size && rows.size === n ? 'checked' : ''} ${!editable || !rows.size ? 'disabled' : ''}>全选</label><div>${editable && !r.reviewed && !this.edit ? button('完成审阅', 'data-action="finish-review"') : ''}${r.undo && editable ? button('撤销', 'data-action="undo"') : ''}${button(`应用所选 ${n}`, `class="tr-primary" data-action="apply" ${!editable || !n || this.edit || this.c.busy ? 'disabled' : ''}`)}</div>`;
   }
   row(g, editable) {
     const editing = this.edit?.groupId === g.id && this.edit.roundId === this.c.current()?.id && editable;
@@ -257,24 +266,37 @@ export class RevisionUI {
       const d = this.edit;
       editor = `<div class="tr-inline-editor"><label class="tr-edit-field"><span class="tr-label">修改后</span><textarea id="tr-edit" aria-label="编辑整句" rows="3">${esc(d.text)}</textarea></label><details class="tr-candidates" ${d.expanded ? 'open' : ''}><summary>替换候选</summary>${d.matches.filter(m => m.options.length || m.remove).map(m => `<div class="tr-candidate"><label for="tr-option-${m.id}">${esc(m.old)}</label><div class="tr-replace">${m.options.length ? `<select id="tr-option-${m.id}" data-option="${m.id}"><option value="" disabled ${m.value === null || m.value === '' ? 'selected' : ''}>替换为…</option>${m.options.map((v, i) => `<option value="${i}" ${m.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>${m.options.length > 1 ? button('换一个', `data-random="${m.id}"`) : ''}` : '<span class="tr-meta">未设置替换词</span>'}</div>${button('删除', `class="tr-delete" data-delete-match="${m.id}" aria-pressed="${m.value === ''}"`)}</div>`).join('') || '<p class="tr-meta">请直接编辑整句。</p>'}</details><div class="tr-edit-actions"><div>${button('不改这句', `data-keep="${g.id}"`)}${button('删除整句', 'class="tr-delete-sentence" data-action="delete-sentence"')}</div><div>${button('取消', 'data-action="cancel-edit"')}${button('完成', 'class="tr-primary" data-action="finish-edit"')}</div></div></div>`;
     }
-    return `<section class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state ? 'tr-row-has-state' : ''}">${content}${state}${editable ? icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`) : ''}${editor}</section>`;
+    return `<section data-group="${g.id}" class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state ? 'tr-row-has-state' : ''}">${content}${state}${editable ? icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`) : ''}${editor}</section>`;
   }
-  updateReviewSelection(r) {
-    for (const g of r.groups) {
+  refreshReviewRows(r, ids) {
+    const editable = this.c.editable(r), rows = this.selectionState(r);
+    for (const id of new Set(ids)) {
+      const g = r.groups[id];
+      if (!g) continue;
+      if (ready(g)) rows.set(g.id, Boolean(g.selected)); else rows.delete(g.id);
+      const row = this.dialog.querySelector(`.tr-rows > [data-group="${CSS.escape(String(id))}"]`);
+      if (row) row.outerHTML = this.row(g, editable);
+    }
+    this.reviewFooter(r, editable);
+  }
+  updateReviewSelection(r, changed = r.groups) {
+    const rows = this.selectionState(r);
+    for (const g of changed) {
+      const eligible = ready(g), selected = Boolean(g.selected && eligible);
+      if (eligible) rows.set(g.id, selected); else rows.delete(g.id);
       const control = this.dialog.querySelector(`[data-toggle="${CSS.escape(String(g.id))}"]`);
       if (!control) continue;
-      const selected = g.selected && ready(g);
       control.setAttribute('aria-pressed', String(selected));
       control.setAttribute('aria-label', `${selected ? '取消选择' : '选择'}第${g.id + 1}字段：${proposal(g)}`);
       control.closest('.tr-row')?.classList.toggle('tr-selected', selected);
     }
-    const eligible = r.groups.filter(ready), selected = this.c.selectedCount(r);
+    const selected = [...rows.values()].filter(Boolean).length;
     const all = this.dialog.querySelector('[data-all]');
-    if (all) all.checked = Boolean(eligible.length && eligible.length === selected);
+    if (all) all.checked = Boolean(rows.size && rows.size === selected);
     const apply = this.dialog.querySelector('[data-action="apply"]');
     if (apply) {
       apply.textContent = `应用所选 ${selected}`;
-      apply.disabled = !selected;
+      apply.disabled = !selected || Boolean(this.edit) || this.c.busy;
     }
   }
   rulesView() {
@@ -331,7 +353,9 @@ export class RevisionUI {
     this.ruleModal.querySelector('h3').textContent = ruleId === 'new' ? '新建规则' : draft.legacy ? '查看兼容规则' : '编辑规则';
     this.ruleModal.querySelector('.tr-modal-body').innerHTML = renderRuleForm(draft, { canDelete: ruleId !== 'new' });
     if (!this.ruleModal.open) this.ruleModal.showModal();
-    this.ruleModal.querySelector('#tr-find')?.focus();
+    // Do not summon the phone keyboard just by opening an existing rule.
+    const focus = matchMedia('(pointer:coarse)').matches ? '[data-action="cancel-rule"]' : '#tr-find';
+    this.ruleModal.querySelector(focus)?.focus({ preventScroll: true });
   }
   closeRuleModal(force = false) {
     const draft = this.ruleDrafts.get(this.ruleId);
@@ -403,11 +427,21 @@ export class RevisionUI {
     }).join('');
     this.body(`<p class="tr-meta tr-history-meta">共检测 ${this.c.context().chatMetadata?.text_revision?.total ?? 0} 轮 · 保留最近 ${history.length} 轮</p>${records || '<p class="tr-empty">还没有检测记录。</p>'}`);
   }
+  pointerDown(e) {
+    const b = e.target.closest?.('button');
+    // Blurring an input can hide the keyboard and move a centered dialog
+    // between pointerdown and pointerup, so the release misses the close button.
+    // Retain focus until the normal click closes it (including discard checks).
+    if (e.button === 0 && dismissActions.has(b?.dataset.action)) e.preventDefault();
+  }
   async click(e) {
     const b = e.target.closest('button');
     if (!b || b.disabled || b.type === 'submit') return;
     const data = b.dataset;
     if (data.action === 'close') { this.dialog.close(); return; }
+    if (data.action === 'cancel-rule' && this.ruleModal.open) { this.closeRuleModal(); return; }
+    if (data.action === 'cancel-import') { this.importModal.close(); return; }
+    if (data.action === 'cancel-scope') { this.scopeModal.close(); return; }
     if (this.c.busy) return;
     if (data.toggle !== undefined) {
       const r = this.c.current();
@@ -415,7 +449,7 @@ export class RevisionUI {
       if (!this.c.editable(r)) throw new Error('正文或检测范围已变化，请重新检测。');
       const g = r.groups[Number(data.toggle)];
       if (ready(g)) g.selected = !g.selected;
-      this.updateReviewSelection(r);
+      this.updateReviewSelection(r, [g]);
       if (e.detail === 0) b.focus({ preventScroll: true });
       return;
     }
@@ -447,9 +481,10 @@ export class RevisionUI {
     }
     if (data.edit !== undefined) {
       const r = this.c.current(); this.c.target(r); this.c.assertIdle();
+      const previousId = this.edit?.groupId;
       const id = Number(data.edit), g = r.groups[id], key = `${r.id}:${id}`;
       this.edit = this.drafts.get(key) ?? { roundId: r.id, groupId: id, key, text: proposal(g), matches: clone(g.matches), expanded: false };
-      this.drafts.set(key, this.edit); this.render(); this.dialog.querySelector('#tr-edit').focus(); return;
+      this.drafts.set(key, this.edit); this.refreshReviewRows(r, [previousId, id]); this.dialog.querySelector('#tr-edit').focus(); return;
     }
     if (data.random !== undefined || data.deleteMatch !== undefined) {
       const m = this.edit.matches.find(m => m.id === Number(data.random ?? data.deleteMatch));
@@ -459,7 +494,7 @@ export class RevisionUI {
     }
     if (data.keep !== undefined) {
       const g = this.c.current().groups[Number(data.keep)]; g.kept = true; g.selected = false; g.matches.forEach(m => { m.done = true; });
-      this.drafts.delete(this.edit?.key); this.edit = null; this.render(); await this.c.persistDraft(); return;
+      this.drafts.delete(this.edit?.key); this.edit = null; this.refreshReviewRows(this.c.current(), [g.id]); this.badge(); await this.c.persistDraft(); return;
     }
     switch (data.action) {
       case 'finish-review': await this.c.finishReview(this.c.current()); this.say('本轮已完成，未应用的内容保留，不再提醒。'); break;
@@ -475,8 +510,6 @@ export class RevisionUI {
       }
       case 'export-rules': this.exportRules(); break;
       case 'import-rules': this.dialog.querySelector('#tr-rule-import-file')?.click(); break;
-      case 'cancel-import': this.importModal.close(); break;
-      case 'cancel-scope': this.scopeModal.close(); break;
       case 'import-append': this.importRules('append'); break;
       case 'import-replace': this.importRules('replace'); break;
       case 'preview-rule': await this.previewRule(); break;
@@ -505,7 +538,11 @@ export class RevisionUI {
         this.ruleModal.close(); this.render(); this.say('已删除此规则，重新检测后生效。');
         break;
       }
-      case 'cancel-edit': this.drafts.delete(this.edit.key); this.edit = null; this.render(); break;
+      case 'cancel-edit': {
+        const id = this.edit.groupId;
+        this.drafts.delete(this.edit.key); this.edit = null;
+        this.refreshReviewRows(this.c.current(), [id]); break;
+      }
       case 'delete-sentence': await this.finishEdit(''); break;
       case 'finish-edit': await this.finishEdit(); break;
       case 'apply': await this.c.commit(this.c.current()); this.say('已应用并确认保存，后续上下文将使用修改稿。'); break;
@@ -541,13 +578,13 @@ export class RevisionUI {
     const g = this.c.current().groups[this.edit.groupId];
     this.edit.text = proposal({ ...g, kept: false, matches: this.edit.matches, manual: false });
     this.edit.expanded = true;
-    this.render();
+    this.refreshReviewRows(this.c.current(), [g.id]);
   }
   async finishEdit(text = this.edit.text) {
     const r = this.c.current(); this.c.target(r);
     const g = r.groups[this.edit.groupId]; g.matches = clone(this.edit.matches); g.manual = false; g.kept = false;
     g.manual = text !== proposal(g); g.draft = text; g.selected = ready(g);
-    this.drafts.delete(this.edit.key); this.edit = null; this.render(); await this.c.persistDraft();
+    this.drafts.delete(this.edit.key); this.edit = null; this.refreshReviewRows(r, [g.id]); this.badge(); await this.c.persistDraft();
   }
   async change(e) {
     const el = e.target;

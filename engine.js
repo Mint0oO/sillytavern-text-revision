@@ -2,7 +2,7 @@
 import { analyzeWords, acceptsWord, CAPTURE_TYPES } from './language.js';
 import { sentenceSpans, revisionSpans } from './sentences.js';
 import { parseRegexes, replacementParts } from './regex-support.js';
-export const ENGINE_VERSION = 7;
+export const ENGINE_VERSION = 8;
 export const DEFAULT_RULES = [
   { id: 'very', find: '极其', kind: 'word', values: ['十分', '非常'], remove: true, action: 'delete', enabled: true },
   { id: 'possess', find: '极具', kind: 'word', values: ['很有', '有'], remove: false, action: 'replace', enabled: true },

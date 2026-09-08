@@ -11,17 +11,27 @@ function parseSingleRegex(find) {
   catch (error) { throw new Error(`正则表达式无效：${error.message}`); }
 }
 
-function explicitRegex(find) {
-  if (!find.startsWith('/')) return false;
-  return find.lastIndexOf('/') > 0;
+function regexLiteralEnd(source, start) {
+  let inClass = false;
+  for (let i = start + 1; i < source.length; i++) {
+    if (source[i] === '\\') { i++; continue; }
+    if (source[i] === '[') inClass = true;
+    else if (source[i] === ']') inClass = false;
+    else if (source[i] === '/' && !inClass) {
+      // A delimiter ends this branch only after its flags and optional spaces.
+      // Keep escaped slashes and slashes inside character classes untouched.
+      const suffix = source.slice(i + 1).match(/^[a-zA-Z]*(?=[^\S\r\n]*(?:[,\r\n]|$))/);
+      if (suffix) return i + 1 + suffix[0].length;
+    }
+  }
+  return -1;
 }
 
-// English commas at the top level and physical newlines are visual separators.
-// Commas inside groups, character classes and quantifiers retain regex meaning;
-// escaped commas and an explicit /expression/flags form bypass visual splitting.
+// Only top-level commas/newlines separate branches. A complete /source/flags
+// is one branch, not a reason to stop parsing the rest of the input.
 export function splitRegexBranches(find) {
   const source = String(find ?? '').trim();
-  if (!source || explicitRegex(source)) return source ? [source] : [];
+  if (!source) return [];
   const branches = [];
   let part = '', escaped = false, inClass = false, parens = 0, braces = 0;
   const push = () => {
@@ -31,6 +41,10 @@ export function splitRegexBranches(find) {
   };
   for (let i = 0; i < source.length; i++) {
     const char = source[i];
+    if (char === '/' && !part.trim()) {
+      const end = regexLiteralEnd(source, i);
+      if (end > i) { part += source.slice(i, end); i = end - 1; continue; }
+    }
     if (escaped) { part += char; escaped = false; continue; }
     if (char === '\\') { part += char; escaped = true; continue; }
     if (char === '[' && !inClass) { inClass = true; part += char; continue; }
@@ -40,12 +54,11 @@ export function splitRegexBranches(find) {
       else if (char === ')' && parens) parens--;
       else if (char === '{') braces++;
       else if (char === '}' && braces) braces--;
-      if (char === '\n' || char === '\r') {
+      if ((char === '\n' || char === '\r' || char === ',') && parens === 0 && braces === 0) {
         push();
         if (char === '\r' && source[i + 1] === '\n') i++;
         continue;
       }
-      if (char === ',' && parens === 0 && braces === 0) { push(); continue; }
     }
     part += char;
   }

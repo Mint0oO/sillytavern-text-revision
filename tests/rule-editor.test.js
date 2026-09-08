@@ -53,6 +53,26 @@ test('regex punctuation is never split; word-list shortcut can be bypassed with 
   assert.throws(() => parseRegexes('/a,b/z', true), /正则表达式无效/);
 });
 
+test('complete regex branches may be separated by commas or newlines without swallowing later rules', async () => {
+  for (const separator of [', ', '\n', '\r\n']) {
+    const find = `/不是([^。]+)/g${separator}/并非([^。]+)/g`;
+    assert.equal((await revise('不是害怕。并非担心。', make(find, '$1'))).expected, '害怕。担心。');
+    assert.deepEqual(parseRegexes(`/极其/g${separator}/极致/g`, true).map(String), ['/极其/g', '/极致/g']);
+  }
+  assert.equal((await revise('AAA 极其', make('/aaa/gi\n极其'))).expected, ' ');
+  for (const find of ['/a,b/g', '/a\\/b/g', '/[/,]+/g', '/https:\\/\\/example\\.com/g']) {
+    assert.equal(parseRegexes(find, true).length, 1);
+    assert.equal(parseRegexes(find, true)[0].source, parseRegex(find).source);
+  }
+  assert.throws(() => parseRegexes('/甲/g\n/乙/z', true), /正则表达式无效/);
+});
+
+test('separators inside regex structures preserve the expression', () => {
+  for (const find of ['(甲\n乙)', '[甲\n乙]', '/甲\n乙/g', '(?:甲,乙)', String.raw`甲\,乙`]) {
+    assert.deepEqual(parseRegexes(find, true).map(r => r.source), [parseRegex(find).source]);
+  }
+});
+
 test('sentence captures and comma-description patterns operate on actual text', async () => {
   assert.equal((await revise('他不是害怕，而是担心她。', make('不是([^，。！？]+)，而是([^。！？]+)', '$2'))).expected, '他担心她。');
   const find = '，(?:仿佛|像在|就像|像是|尾音|声音|带着|甚至带|指节|指尖|骨节)[^，。？！：（…—]*|，[^，。：；\\n”」…]*(?:指节|指关节|不易察|微不可|几不可|不容置|带着一)[^，。：；—\\n“？「]*';
