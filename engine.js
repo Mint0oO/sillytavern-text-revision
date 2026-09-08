@@ -1,8 +1,8 @@
 // Pure text operations: no chat access, network requests, or DOM writes.
 import { analyzeWords, acceptsWord, CAPTURE_TYPES } from './language.js';
 import { sentenceSpans, revisionSpans } from './sentences.js';
-import { parseRegex, replacementParts } from './regex-support.js';
-export const ENGINE_VERSION = 6;
+import { parseRegexes, replacementParts } from './regex-support.js';
+export const ENGINE_VERSION = 7;
 export const DEFAULT_RULES = [
   { id: 'very', find: '极其', kind: 'word', values: ['十分', '非常'], remove: true, action: 'delete', enabled: true },
   { id: 'possess', find: '极具', kind: 'word', values: ['很有', '有'], remove: false, action: 'replace', enabled: true },
@@ -43,7 +43,7 @@ export function validateRule(rule) {
   const find = String(rule.find ?? '').trim();
   if (!find || find.length > (rule.kind === 'regex' ? 8000 : 256)) throw new Error('查找内容不能为空；正则最多 8000 字，旧模板最多 256 字。');
   const kind = ['pattern', 'regex'].includes(rule.kind) ? rule.kind : 'word';
-  if (kind === 'regex') parseRegex(find, rule.editorVersion === 1);
+  if (kind === 'regex') parseRegexes(find, rule.editorVersion === 1);
   const keys = kind === 'pattern' ? find.match(/\{[A-Z]\}/g) ?? [] : [];
   if (new Set(keys).size !== keys.length || find === keys[0] || keys.length > 4) throw new Error('句式需要固定文字，最多使用 4 个不重复的占位符（{A} 到 {Z}）。');
   if (kind === 'pattern' && /\{[A-Z]\}\{[A-Z]\}/.test(find)) throw new Error('两个占位符之间需要固定文字。');

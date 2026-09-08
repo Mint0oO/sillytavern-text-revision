@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRuleDraft, simpleRule, isLegacyRule, bulkRules } from '../rule-editor.js';
 import { validateRule, applySelected } from '../engine.js';
 import { scanPrepared } from '../scanner.js';
-import { parseRegex } from '../regex-support.js';
+import { parseRegex, parseRegexes, splitRegexBranches } from '../regex-support.js';
 import { renderRuleForm } from '../rule-form.js';
 
 const make = (find, valuesText = '', extra = {}) => simpleRule({ ...createRuleDraft(), find, valuesText, ...extra });
@@ -30,12 +30,27 @@ test('candidate lists select independently per occurrence and log the actual cho
   assert.deepEqual(make('词', '十分\n很').values, ['十分', '很']);
 });
 
+test('English commas and physical newlines create equivalent regex branches', async () => {
+  const source = '他死死地抓住杯子，语气极其冷淡。';
+  for (const find of ['死死地?, 极其', '死死地?\n极其']) {
+    const round = await revise(source, make(find));
+    assert.equal(round.expected, '他抓住杯子，语气冷淡。');
+    assert.deepEqual(parseRegexes(find, true).map(regex => regex.source), ['死死地?', '极其']);
+  }
+  const captures = await revise('不是害怕。并非担心。', make('不是([^。]+)\n并非([^。]+)', '$1'));
+  assert.equal(captures.expected, '害怕。担心。');
+});
+
 test('regex punctuation is never split; word-list shortcut can be bypassed with a regex literal', async () => {
   for (const find of ['a{1,3}', '[a,b]+', '(a,b)', 'a\\,b', '/a,b/g', '甲，乙']) {
     assert.equal(parseRegex(find, true).source, parseRegex(find).source);
   }
   assert.equal((await revise('a,b a b', make('/a,b/g', '词'))).expected, '词 a b');
   assert.equal((await revise('甲，乙', make('甲，乙', '丙'))).expected, '丙');
+  assert.deepEqual(splitRegexBranches(String.raw`a\,b`), [String.raw`a\,b`]);
+  assert.deepEqual(splitRegexBranches('a{1,3}, [a,b]+, (a,b), 末尾'), ['a{1,3}', '[a,b]+', '(a,b)', '末尾']);
+  assert.equal(parseRegex('/a,b/g', true).source, 'a,b');
+  assert.throws(() => parseRegexes('/a,b/z', true), /正则表达式无效/);
 });
 
 test('sentence captures and comma-description patterns operate on actual text', async () => {

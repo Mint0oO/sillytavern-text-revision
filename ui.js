@@ -2,7 +2,7 @@ import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule
 import { clone } from './controller.js';
 import { ensureLanguage } from './language.js';
 import { createRuleDraft, simpleRule } from './rule-editor.js';
-import { renderRulesView } from './rules-view.js';
+import { renderRulesView, ruleCountText } from './rules-view.js';
 import { scanPrepared } from './scanner.js';
 import { renderRuleForm } from './rule-form.js';
 import { stringifyRuleSet, parseRuleSet, applyRuleSet, MAX_RULE_SET_BYTES } from './rule-transfer.js';
@@ -66,6 +66,15 @@ export class RevisionUI {
       this.scopeMode = null;
     });
     this.scopeModal.addEventListener('cancel', e => { e.preventDefault(); this.scopeModal.close(); });
+    // Subdialogs are promoted into the browser's top layer. Handle their
+    // controls directly instead of depending on a click reaching the parent
+    // dialog, which is unreliable in some mobile hosts.
+    for (const modal of [this.ruleModal, this.importModal, this.scopeModal]) {
+      modal.addEventListener('click', e => { e.stopPropagation(); this.run(() => this.click(e)); });
+      modal.addEventListener('input', e => { e.stopPropagation(); this.input(e); });
+      modal.addEventListener('change', e => { e.stopPropagation(); this.run(() => this.change(e)); });
+      modal.addEventListener('submit', e => { e.preventDefault(); e.stopPropagation(); this.run(() => this.submit(e)); });
+    }
     this.launcher = document.createElement('button');
     this.launcher.id = 'tr-launcher';
     this.launcher.type = 'button';
@@ -211,7 +220,8 @@ export class RevisionUI {
     const title = { review: '词句修订', rules: '规则', settings: '设置', extract: '标签提取', exclude: '内容排除', history: '检测记录', snapshot: '检测详情' }[this.screen];
     const parent = this.screen === 'snapshot' ? ['history', '记录'] : ['extract', 'exclude'].includes(this.screen) ? ['settings', '设置'] : ['review', '修订'];
     const nav = this.screen === 'review' ? button('规则', 'data-screen="rules"') + button('记录', 'data-screen="history"') + button('设置', 'data-screen="settings"') : button(`‹ ${parent[1]}`, `data-screen="${parent[0]}"`);
-    this.dialog.querySelector('.tr-head').innerHTML = `<h2>${title}</h2><nav>${nav}${icon('xmark', '关闭修订面板', 'data-action="close"')}</nav>`;
+    const count = this.screen === 'rules' ? `<span class="tr-head-count">${ruleCountText(this.c.settings().rules)}</span>` : '';
+    this.dialog.querySelector('.tr-head').innerHTML = `<div class="tr-head-title"><h2>${title}</h2>${count}</div><nav>${nav}${icon('xmark', '关闭修订面板', 'data-action="close"')}</nav>`;
     this.dialog.querySelector('.tr-foot').innerHTML = '';
     const draw = { review: 'review', snapshot: 'review', rules: 'rulesView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
     this[draw]();
@@ -248,6 +258,24 @@ export class RevisionUI {
       editor = `<div class="tr-inline-editor"><label class="tr-edit-field"><span class="tr-label">修改后</span><textarea id="tr-edit" aria-label="编辑整句" rows="3">${esc(d.text)}</textarea></label><details class="tr-candidates" ${d.expanded ? 'open' : ''}><summary>替换候选</summary>${d.matches.filter(m => m.options.length || m.remove).map(m => `<div class="tr-candidate"><label for="tr-option-${m.id}">${esc(m.old)}</label><div class="tr-replace">${m.options.length ? `<select id="tr-option-${m.id}" data-option="${m.id}"><option value="" disabled ${m.value === null || m.value === '' ? 'selected' : ''}>替换为…</option>${m.options.map((v, i) => `<option value="${i}" ${m.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>${m.options.length > 1 ? button('换一个', `data-random="${m.id}"`) : ''}` : '<span class="tr-meta">未设置替换词</span>'}</div>${button('删除', `class="tr-delete" data-delete-match="${m.id}" aria-pressed="${m.value === ''}"`)}</div>`).join('') || '<p class="tr-meta">请直接编辑整句。</p>'}</details><div class="tr-edit-actions"><div>${button('不改这句', `data-keep="${g.id}"`)}${button('删除整句', 'class="tr-delete-sentence" data-action="delete-sentence"')}</div><div>${button('取消', 'data-action="cancel-edit"')}${button('完成', 'class="tr-primary" data-action="finish-edit"')}</div></div></div>`;
     }
     return `<section class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state ? 'tr-row-has-state' : ''}">${content}${state}${editable ? icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`) : ''}${editor}</section>`;
+  }
+  updateReviewSelection(r) {
+    for (const g of r.groups) {
+      const control = this.dialog.querySelector(`[data-toggle="${CSS.escape(String(g.id))}"]`);
+      if (!control) continue;
+      const selected = g.selected && ready(g);
+      control.setAttribute('aria-pressed', String(selected));
+      control.setAttribute('aria-label', `${selected ? '取消选择' : '选择'}第${g.id + 1}字段：${proposal(g)}`);
+      control.closest('.tr-row')?.classList.toggle('tr-selected', selected);
+    }
+    const eligible = r.groups.filter(ready), selected = this.c.selectedCount(r);
+    const all = this.dialog.querySelector('[data-all]');
+    if (all) all.checked = Boolean(eligible.length && eligible.length === selected);
+    const apply = this.dialog.querySelector('[data-action="apply"]');
+    if (apply) {
+      apply.textContent = `应用所选 ${selected}`;
+      apply.disabled = !selected;
+    }
   }
   rulesView() {
     this.body(renderRulesView(this.c.settings().rules, this.ruleFilters, this.c.settings().ruleExecution, { active: this.ruleDeleteMode, selectedIds: this.ruleDeleteIds }));
@@ -387,8 +415,8 @@ export class RevisionUI {
       if (!this.c.editable(r)) throw new Error('正文或检测范围已变化，请重新检测。');
       const g = r.groups[Number(data.toggle)];
       if (ready(g)) g.selected = !g.selected;
-      this.render();
-      this.dialog.querySelector(`[data-toggle="${g.id}"]`)?.focus({ preventScroll: true });
+      this.updateReviewSelection(r);
+      if (e.detail === 0) b.focus({ preventScroll: true });
       return;
     }
     if (data.screen) {
@@ -549,7 +577,11 @@ export class RevisionUI {
       this.dialog.querySelector(`[data-rule-enabled="${CSS.escape(el.dataset.ruleEnabled)}"]`)?.focus({ preventScroll: true });
     }
     if (el.id === 'tr-appearance') { this.c.settings().appearance = el.value; this.theme(); this.c.saveSettings(); }
-    if (el.hasAttribute('data-all')) { this.c.current().groups.filter(ready).forEach(g => { g.selected = el.checked; }); this.render(); }
+    if (el.hasAttribute('data-all')) {
+      const r = this.c.current();
+      r.groups.filter(ready).forEach(g => { g.selected = el.checked; });
+      this.updateReviewSelection(r);
+    }
     if (el.dataset.option !== undefined) { const m = this.edit.matches.find(m => m.id === Number(el.dataset.option)); m.value = m.options[Number(el.value)]; this.refreshEditor(); }
   }
   submit(e) {

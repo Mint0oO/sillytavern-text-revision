@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderRulesView, summarizeRuleFind } from '../rules-view.js';
+import { renderRulesView, summarizeRuleFind, ruleCountText } from '../rules-view.js';
 
 test('collapsed rule summaries hide regex group internals and preserve literal parentheses', () => {
-  assert.equal(summarizeRuleFind('不是([^，。！？]+)，而是([^。！？]+)'), '不是…，而是…');
-  assert.equal(summarizeRuleFind('甲(?:乙(丙)|丁)+戊'), '甲…戊');
+  assert.equal(summarizeRuleFind('不是([^，。！？]+)，而是([^。！？]+)'), '不是*，而是*');
+  assert.equal(summarizeRuleFind('甲(?:乙(丙)|丁)+戊'), '甲*戊');
+  assert.equal(summarizeRuleFind('像.*?一样'), '像*一样');
+  assert.equal(summarizeRuleFind('从[^。]+到达'), '从*到达');
+  assert.equal(summarizeRuleFind('甲[\\s\\S]*?乙'), '甲*乙');
+  assert.equal(summarizeRuleFind('极其\n极致'), '极其, 极致');
   assert.equal(summarizeRuleFind(String.raw`甲\(乙\)丙`), String.raw`甲\(乙\)丙`);
   assert.equal(summarizeRuleFind('甲[()]乙'), '甲[()]乙');
-  assert.equal(summarizeRuleFind('甲([)])乙'), '甲…乙');
+  assert.equal(summarizeRuleFind('甲([)])乙'), '甲*乙');
   assert.equal(summarizeRuleFind('甲(未闭合'), '甲(未闭合');
 });
 
@@ -15,7 +19,7 @@ test('rules stay compact and expose modal editing controls', () => {
   const find = '不是([^，。！？]+)，而是([^。！？]+)';
   const rule = { id: 'sentence', kind: 'regex', editorVersion: 1, find, values: ['$2'], action: 'replace' };
   const collapsed = renderRulesView([rule], { search: '' }, 'review');
-  assert.match(collapsed, />不是…，而是…</);
+  assert.match(collapsed, />不是\*，而是\*</);
   assert.match(collapsed, /data-action="export-rules"/);
   assert.match(collapsed, /data-action="import-rules"/);
   assert.match(collapsed, /fa-file-export/);
@@ -27,7 +31,8 @@ test('rules stay compact and expose modal editing controls', () => {
   assert.match(collapsed, />新增</);
   assert.doesNotMatch(collapsed, /＋ 新增/);
   assert.match(collapsed, />人工审查</);
-  assert.match(collapsed, /已启用 1 \/ 1/);
+  assert.doesNotMatch(collapsed, /已启用 1 \/ 1/);
+  assert.equal(ruleCountText([rule]), '已启用 1 / 1');
   assert.match(collapsed, /placeholder="搜索"/);
   assert.match(collapsed, new RegExp(`title="${find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
   assert.doesNotMatch(collapsed, />不是\(\[\^/);
@@ -51,6 +56,6 @@ test('rule counter reports enabled rules rather than search matches', () => {
     { id: 'one', kind: 'regex', editorVersion: 1, find: '极其', values: [], action: 'delete', enabled: false },
     { id: 'two', kind: 'regex', editorVersion: 1, find: '极具', values: ['很有'], action: 'replace', enabled: true },
   ];
-  const html = renderRulesView(rules, { search: '极其' }, 'review');
-  assert.match(html, /已启用 1 \/ 2/);
+  renderRulesView(rules, { search: '极其' }, 'review');
+  assert.equal(ruleCountText(rules), '已启用 1 / 2');
 });

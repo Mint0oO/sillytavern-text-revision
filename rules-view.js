@@ -6,8 +6,9 @@ const hostIcon = (name, label, action) => button(`<i class="fa-solid fa-${name}"
 // Keep collapsed rules readable on narrow screens. Regex groups often contain
 // implementation details rather than words a reader needs while browsing.
 export function summarizeRuleFind(find) {
-  const source = String(find ?? '');
-  let summary = '', replaced = false;
+  const original = String(find ?? '');
+  const source = original.replace(/\r?\n+/g, ', ');
+  let summary = '', replaced = source !== original;
   for (let i = 0; i < source.length;) {
     if (source[i] === '\\') {
       summary += source.slice(i, i + 2);
@@ -20,9 +21,24 @@ export function summarizeRuleFind(find) {
         if (source[end] === '\\') end++;
         else if (source[end] === ']') { end++; break; }
       }
-      summary += source.slice(i, end);
+      const characterClass = source.slice(i, end);
+      const quantifier = source.slice(end).match(/^(?:[*+]|{\d+(?:,\d*)?})\??/);
+      if (quantifier && (characterClass.startsWith('[^') || characterClass === '[\\s\\S]')) {
+        summary += '*';
+        replaced = true;
+        end += quantifier[0].length;
+      } else summary += characterClass;
       i = end;
       continue;
+    }
+    if (source[i] === '.') {
+      const quantifier = source.slice(i + 1).match(/^[*+]\??/);
+      if (quantifier) {
+        summary += '*';
+        replaced = true;
+        i += 1 + quantifier[0].length;
+        continue;
+      }
     }
     if (source[i] !== '(') {
       summary += source[i++];
@@ -41,18 +57,19 @@ export function summarizeRuleFind(find) {
       summary += source[i++];
       continue;
     }
-    summary += '…';
+    summary += '*';
     replaced = true;
     i = end;
     const quantifier = source.slice(i).match(/^(?:[?*+]|{\d+(?:,\d*)?\})\??/);
     if (quantifier) i += quantifier[0].length;
   }
-  return replaced ? summary.replace(/…{2,}/g, '…') : source;
+  return replaced ? summary.replace(/\*{2,}/g, '*') : source;
 }
+
+export const ruleCountText = rules => `已启用 ${rules.filter(rule => rule.enabled !== false).length} / ${rules.length}`;
 
 export function renderRulesView(all, f, execution = 'review', deletion = {}) {
   const rules = all.filter(r => !f.search || [r.find, ...(r.values ?? [])].join(' ').toLowerCase().includes(f.search.toLowerCase()));
-  const enabledCount = all.filter(r => r.enabled !== false).length;
   const deleteMode = Boolean(deletion.active), selectedIds = deletion.selectedIds instanceof Set ? deletion.selectedIds : new Set(deletion.selectedIds ?? []);
   const row = r => {
     const visibleFind = summarizeRuleFind(r.find);
@@ -71,7 +88,7 @@ export function renderRulesView(all, f, execution = 'review', deletion = {}) {
   const ruleTools = deleteMode
     ? ''
     : `${button('删除', `data-action="begin-rule-delete" ${all.length ? '' : 'disabled'}`)}${button('新增', 'data-action="new-rule"')}${hostIcon('file-import', '导入 JSON 规则集', 'import-rules')}${hostIcon('file-export', '导出 JSON 规则集', 'export-rules')}`;
-  return `<div class="tr-bar ${deleteMode ? 'tr-rule-delete-bar' : ''}"><div class="tr-rule-primary-tools"><span>已启用 ${enabledCount} / ${all.length}</span><input data-rule-filter="search" aria-label="搜索规则" placeholder="搜索" value="${esc(f.search)}">${executionPicker}</div><div class="tr-rule-tools">${ruleTools}</div></div><input id="tr-rule-import-file" type="file" accept=".json,application/json" hidden>
+  return `<div class="tr-bar ${deleteMode ? 'tr-rule-delete-bar' : ''}"><input data-rule-filter="search" aria-label="搜索规则" placeholder="搜索" value="${esc(f.search)}">${executionPicker}<div class="tr-rule-tools">${ruleTools}</div></div><input id="tr-rule-import-file" type="file" accept=".json,application/json" hidden>
     ${current.map(row).join('')}
     ${legacy.length ? `<details class="tr-legacy-rules" ${f.search ? 'open' : ''}><summary>兼容规则 · ${legacy.length}</summary>${legacy.map(row).join('')}</details>` : ''}
     ${!rules.length ? '<p class="tr-meta">没有符合搜索的规则。</p>' : ''}
