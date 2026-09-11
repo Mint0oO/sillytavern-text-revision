@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RevisionUI } from '../ui.js';
+import { RevisionUI, renderChangeLog } from '../ui.js';
 // IDs in these DOM doubles are numeric; browsers provide the native CSS API.
 globalThis.CSS ??= { escape: String };
 
@@ -65,4 +65,58 @@ test('canceling the discard prompt retains the open editor and its unsaved draft
   } finally {
     if (previousConfirm === undefined) delete globalThis.confirm; else globalThis.confirm = previousConfirm;
   }
+});
+
+test('execution mode changes preserve the independent trigger and existing settings', async () => {
+  const settings = { autoScan: false, enabled: true, ruleExecution: 'review', rules: [{ id: 'existing' }], theme: 'dark' };
+  const originalRules = settings.rules, help = {};
+  let saves = 0;
+  const ui = Object.assign(Object.create(RevisionUI.prototype), {
+    c: { settings: () => settings, saveSettings() { saves++; } },
+    dialog: { querySelector: () => help },
+  });
+  await ui.change({ target: { id: 'tr-rule-execution', value: 'auto', dataset: {}, hasAttribute: () => false } });
+  assert.equal(settings.ruleExecution, 'auto');
+  assert.equal(settings.autoScan, false);
+  assert.equal(settings.enabled, true);
+  assert.equal(settings.rules, originalRules);
+  assert.equal(settings.theme, 'dark');
+  assert.equal(saves, 1);
+  assert.match(help.textContent, /手动检测先展示结果/);
+});
+
+test('clearing search restores all rules without changing delete selections', async () => {
+  const selection = new Set(['keep']);
+  let rendered = 0, focused = false;
+  const ui = Object.assign(Object.create(RevisionUI.prototype), {
+    c: { busy: false }, ruleFilters: { search: '极其' }, ruleDeleteIds: selection,
+    render() { rendered++; },
+    dialog: { querySelector: () => ({ focus() { focused = true; } }) },
+  });
+  await ui.click({ target: { closest: () => ({ type: 'button', dataset: { action: 'clear-rule-search' } }) } });
+  assert.equal(ui.ruleFilters.search, '');
+  assert.equal(rendered, 1);
+  assert.equal(focused, true);
+  assert.deepEqual([...selection], ['keep']);
+});
+
+test('compact logs group changed text, escape markup and preserve the stored originals', () => {
+  const log = [
+    { before: '他极其冷漠。', after: '他冷漠。', rule: 'very-long-regex', automatic: false },
+    { before: '她极具魅力。', after: '她很有魅力。', rule: 'another-regex', automatic: true },
+    { before: '😀', after: '😁' },
+    { before: '<x>', after: '' },
+    { before: '原样', after: '原样' },
+  ];
+  const original = JSON.stringify(log), html = renderChangeLog(log);
+  assert.match(html, /^<details class="tr-change-log tr-change-log-root"><summary>修改日志 · 4 处<\/summary><div class="tr-change-log-groups">/);
+  assert.match(html, /删除 · 2 处/);
+  assert.match(html, /替换 · 2 处/);
+  assert.match(html, /<del>极其<\/del>/);
+  assert.match(html, /<del>极具<\/del> → <ins>很有<\/ins>/);
+  assert.match(html, /<del>😀<\/del> → <ins>😁<\/ins>/);
+  assert.match(html, /&lt;x&gt;/);
+  assert.doesNotMatch(html, /very-long-regex|another-regex|他|她|原样|手动|自动/);
+  assert.equal(JSON.stringify(log), original);
+  assert.equal(renderChangeLog([]), '');
 });

@@ -155,8 +155,7 @@
 @media(max-width:360px){#tr-root .tr-head{padding-inline:4px;gap:0}#tr-root .tr-head nav button{padding-inline:3px}#tr-root .tr-review-bar{gap:4px}#tr-root .tr-review-bar .tr-legend{gap:5px}}
 @media(max-width:360px){#tr-root .tr-record-summary{grid-template-columns:auto auto 1fr auto;gap:5px;padding-inline:5px}#tr-root .tr-record-reply{display:none}}
 
-/* Compact settings stay side by side on phones. The range hit area is larger than its track. */
-#tr-root .tr-mode-row{display:grid;grid-template-columns:auto minmax(160px,220px);justify-content:space-between;align-items:end;gap:18px;margin:12px 0}
+/* Range hit areas are larger than the visible tracks. */
 #tr-root .tr-mini-slider{display:block;min-width:0;width:100%;max-width:220px;font-size:12px;margin:0}
 #tr-root .tr-mini-slider>span{display:flex;justify-content:space-between;gap:4px;white-space:nowrap;align-items:center}
 #tr-root .tr-mini-slider output{font:inherit;color:var(--tr-muted)}
@@ -166,9 +165,6 @@
 #tr-root .tr-mini-slider input[type=range]::-moz-range-track{height:4px;border:0;border-radius:4px;background:var(--tr-border);box-shadow:none}
 #tr-root .tr-mini-slider input[type=range]::-moz-range-progress{height:4px;border-radius:4px;background:var(--tr-btn)}
 #tr-root .tr-mini-slider input[type=range]::-moz-range-thumb{width:12px;height:12px;border:0;border-radius:50%;background:var(--tr-btn);box-shadow:none}
-#tr-root .tr-launcher-settings{display:grid;grid-template-columns:minmax(0,1fr) minmax(85px,1fr) 36px;align-items:end;gap:10px;margin:4px 0 12px}
-#tr-root .tr-launcher-color{min-width:0}
-#tr-root .tr-launcher-color select{padding:6px;font-size:13px;height:40px}
 #tr-root .tr-launcher-preview{display:grid;place-items:center;box-sizing:border-box;width:36px;height:36px;border:1px solid var(--tr-border);border-radius:50%;margin-bottom:2px;box-shadow:0 2px 6px #0002}
 #tr-launcher,#tr-root .tr-launcher-preview{background:var(--tr-launcher-bg,var(--tr-bg));color:var(--tr-launcher-ink,var(--tr-ink))}
 #tr-launcher svg,#tr-root .tr-launcher-preview svg{width:16px;height:16px}
@@ -189,12 +185,6 @@
 #tr-root .tr-form-actions{gap:8px}
 #tr-root .tr-legacy-rules{margin:18px 0;color:var(--tr-muted)}
 #tr-root [data-rule-filter="search"]{flex:1 1 64px;width:0;min-width:64px;max-width:none;height:32px;margin:0;padding:4px 8px;font-size:13px}
-#tr-root .tr-execution-select{position:relative;display:block;width:92px;flex:none}
-#tr-root .tr-execution-select select{appearance:none!important;-webkit-appearance:none!important;width:100%;height:32px;padding:3px 25px 3px 9px;border:1px solid var(--tr-border);border-radius:8px;background:var(--tr-surface);color:var(--tr-ink);box-shadow:0 1px 4px #00000012;font-size:13px;font-weight:500;cursor:pointer}
-#tr-root .tr-execution-select>span{position:absolute;right:8px;top:50%;width:12px;height:14px;transform:translateY(-50%);color:var(--tr-muted);pointer-events:none}
-#tr-root .tr-execution-select svg{display:block;width:12px;height:14px;fill:none;stroke:currentColor;stroke-width:1.15;stroke-linecap:round;stroke-linejoin:round}
-#tr-root[data-theme=dark] .tr-execution-select select{background:var(--tr-surface);color:var(--tr-ink);border-color:var(--tr-border);box-shadow:0 1px 4px #0003;font-weight:500}
-#tr-root[data-theme=dark] .tr-execution-select>span{color:var(--tr-ink)}
 #tr-root .tr-rule-delete-selected{background:color-mix(in srgb,var(--tr-strike) 8%,var(--tr-surface));box-shadow:inset 2px 0 color-mix(in srgb,var(--tr-strike) 65%,transparent)}
 #tr-root .tr-rule-delete-check input{accent-color:var(--tr-strike)}
 #tr-root .tr-rule-tools .tr-icon{width:28px;min-width:28px;padding-inline:3px}
@@ -229,14 +219,75 @@
 #tr-root .tr-import-list{margin:8px 0;padding-left:22px;max-height:140px;overflow:auto;color:var(--tr-muted)}
 #tr-root .tr-import-list li{padding:2px 0;overflow-wrap:anywhere}
 
-/* Appearance stays in the left half; the global plugin switch occupies the right half. */
-#tr-root .tr-appearance-row{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);align-items:end;gap:18px}
-#tr-root .tr-appearance-row .tr-field{min-width:0;margin:16px 0 12px}
-#tr-root .tr-plugin-switch{display:flex;align-items:center;justify-content:center;gap:16px;height:40px;margin-bottom:12px;font-size:13px;white-space:nowrap;cursor:pointer}
+/* Shared appearance for the labeled settings switches. */
 #tr-root .tr-plugin-switch input{appearance:none!important;-webkit-appearance:none!important;position:relative!important;display:block!important;width:44px!important;height:24px!important;min-width:44px!important;min-height:24px!important;margin:0!important;border:1px solid var(--tr-border)!important;border-radius:13px!important;background:var(--tr-muted)!important;transition:background .15s!important}
 #tr-root .tr-plugin-switch input::after{content:""!important;display:block!important;position:absolute!important;top:2px!important;left:2px!important;width:18px!important;height:18px!important;border-radius:50%!important;background:var(--tr-surface)!important;box-shadow:0 1px 3px #0004!important;clip-path:none!important;transform:none!important;transition:left .15s!important}
 #tr-root .tr-plugin-switch input:checked{background:var(--tr-btn)!important}
 #tr-root .tr-plugin-switch input:checked::after{left:22px!important}
-@media(max-width:640px){#tr-root .tr-appearance-row{gap:10px}#tr-root .tr-plugin-switch{gap:12px}}
-@media(max-width:640px){#tr-root{width:calc(100vw - 16px);height:min(760px,calc(var(--tr-height,100dvh) - 16px))}#tr-root .tr-bar{gap:5px;padding-top:7px}#tr-root .tr-execution-select{width:88px}#tr-root .tr-rule-tools{gap:0;margin-left:auto}#tr-root .tr-rule-tools button{padding-inline:4px}#tr-root .tr-submodal{width:calc(100vw - 32px)}#tr-root .tr-inline-editor{margin-left:12px;margin-right:4px}#tr-root .tr-mode-row{grid-template-columns:auto minmax(150px,200px);gap:12px}#tr-root .tr-mini-slider{max-width:200px}}
+@media(max-width:640px){#tr-root{width:calc(100vw - 16px);height:min(760px,calc(var(--tr-height,100dvh) - 16px))}#tr-root .tr-bar{gap:5px;padding-top:7px}#tr-root .tr-rule-tools{gap:0;margin-left:auto}#tr-root .tr-rule-tools button{padding-inline:4px}#tr-root .tr-submodal{width:calc(100vw - 32px)}#tr-root .tr-inline-editor{margin-left:12px;margin-right:4px}#tr-root .tr-mini-slider{max-width:200px}}
 @media(pointer:coarse){#tr-root .tr-rule-tools .tr-icon,#tr-root .tr-modal-head .tr-icon{min-width:44px;min-height:44px}#tr-root .tr-rule-tools>button{min-width:40px}}
+
+/* Settings share one label/control grid; narrow screens stack wide controls. */
+#tr-root .tr-settings{--tr-setting-label:180px;width:100%;max-width:600px;margin:0 auto;padding:4px 0 20px}
+#tr-root .tr-settings-section{padding:14px 0 16px;border-bottom:1px solid var(--tr-border)}
+#tr-root .tr-settings-section:last-child{border-bottom:0;padding-bottom:0}
+#tr-root .tr-settings-section h3{font-size:14px;font-weight:600;line-height:1.6;color:var(--tr-ink);margin:0 0 10px}
+#tr-root .tr-settings-section h3:focus-visible{outline:2px solid var(--tr-muted);outline-offset:3px}
+#tr-root .tr-setting{display:grid;grid-template-columns:var(--tr-setting-label) minmax(0,1fr);align-items:center;column-gap:20px;row-gap:4px;min-height:44px;margin:8px 0;font-size:14px;white-space:normal}
+#tr-root .tr-setting>label,#tr-root .tr-setting>span{min-width:0;overflow-wrap:anywhere}
+#tr-root .tr-setting-control{min-width:0;width:100%}
+#tr-root .tr-setting-control select{font-size:14px;min-height:44px}
+#tr-root .tr-setting-select{position:relative;display:block;min-width:0;width:100%}
+#tr-root .tr-setting-select select{appearance:none!important;-webkit-appearance:none!important;padding-left:10px;padding-right:32px}
+#tr-root .tr-select-arrow{position:absolute;right:10px;top:50%;transform:translateY(-50%);width:12px;height:12px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+#tr-root .tr-setting-execution #tr-rule-execution{font-size:14px}
+#tr-root .tr-setting-toggle{cursor:pointer}
+#tr-root .tr-setting-toggle .tr-setting-control{display:flex;align-items:center;min-height:44px}
+#tr-root .tr-settings .tr-setting-help{grid-column:2;margin:2px 0 10px calc(var(--tr-setting-label) + 20px);font-size:12px;line-height:1.6}
+#tr-root .tr-setting>.tr-setting-help{margin-left:0}
+#tr-root .tr-settings .tr-mini-slider{max-width:none;display:flex;align-items:center;gap:10px}
+#tr-root .tr-settings .tr-mini-slider output{flex:none;min-width:36px;text-align:right;font-size:12px;color:var(--tr-muted);font-variant-numeric:tabular-nums;order:1}
+#tr-root .tr-settings .tr-mini-slider input[type=range]{flex:1;min-width:0;height:44px;min-height:44px;max-height:44px}
+#tr-root .tr-settings .tr-themes button{min-height:44px;flex:1}
+#tr-root .tr-settings .tr-scope-entries{padding:0;gap:12px}
+#tr-root .tr-settings .tr-scope-entries button{display:flex;align-items:center;justify-content:space-between;gap:8px;min-height:44px;padding:8px 12px;text-align:left;font-size:14px}
+#tr-root .tr-palette-preview{margin:4px 0 14px calc(var(--tr-setting-label) + 20px);padding:8px 0}
+#tr-root .tr-palette-preview .tr-legend{border:0;padding:0 0 6px}
+#tr-root .tr-palette-preview .tr-sentence{font-size:14px;line-height:1.7}
+#tr-root .tr-launcher-group{border-top:1px solid var(--tr-border);padding-top:8px;margin-top:8px}
+#tr-root .tr-setting-execution .tr-setting-control{width:124px;justify-self:end}
+#tr-root .tr-setting-toggle .tr-setting-control{justify-content:flex-end}
+#tr-root .tr-setting-launcher-color .tr-setting-control{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));align-items:center;gap:4px}
+#tr-root .tr-setting-launcher-color .tr-launcher-preview{flex:none;margin:0}
+#tr-root .tr-setting-launcher-color .tr-launcher-preview{justify-self:end}
+/* The optional hint wraps as a whole and is clipped if it cannot fit line one. */
+#tr-root .tr-execution-status{display:flex;align-items:center;flex-wrap:wrap;gap:0 8px;height:24px;line-height:24px;overflow:hidden;color:var(--tr-muted);font-size:12px;margin:2px 0 4px}
+#tr-root .tr-execution-status>span{flex:none;white-space:nowrap}
+#tr-root .tr-rule-search{position:relative;display:flex;align-items:center;flex:0 1 33.333%;width:33.333%;min-width:96px;min-height:44px}
+#tr-root .tr-bar .tr-rule-search input{flex:1;width:100%;min-width:0;height:32px;font-size:13px;padding:4px 30px 4px 8px}
+#tr-root .tr-rule-search .tr-search-clear{position:absolute;right:0;top:50%;transform:translateY(-50%);width:30px;min-height:44px;padding:0;font-size:18px;color:var(--tr-muted)}
+#tr-root .tr-bar .tr-rule-tools{margin-left:auto}
+#tr-root .tr-change-log-groups{display:block}
+#tr-root .tr-change-log-groups .tr-change-log{width:100%;min-width:0;margin:0;border:0;border-radius:0;border-top:1px solid var(--tr-border);box-shadow:none}
+#tr-root .tr-change-log .tr-sentence{padding:4px 0}
+#tr-root .tr-change-log-root summary::before{content:'›';display:inline-block;margin-right:7px;font-size:16px}
+#tr-root .tr-change-log-root[open]>summary::before,#tr-root .tr-change-log-groups details[open]>summary::before{transform:rotate(90deg)}
+@media(max-width:640px){
+  #tr-root .tr-settings{padding-inline:4px}
+  #tr-root .tr-setting{grid-template-columns:minmax(0,1fr);gap:4px;margin:10px 0}
+  #tr-root .tr-setting-control{max-width:none}
+  #tr-root .tr-setting-control select{font-size:16px}
+  #tr-root .tr-setting-toggle{grid-template-columns:minmax(0,1fr) 44px;column-gap:12px;margin:4px 0}
+  #tr-root .tr-setting-toggle .tr-setting-control{justify-content:flex-end}
+  #tr-root .tr-settings .tr-setting-help{grid-column:1;margin:0 0 10px}
+  #tr-root .tr-settings .tr-mini-slider{max-width:none}
+  #tr-root .tr-palette-preview{margin-left:0}
+  #tr-root .tr-settings .tr-scope-entries{gap:8px}
+  #tr-root .tr-settings .tr-scope-entries button{padding:8px;font-size:13px;gap:4px}
+  #tr-root .tr-bar{gap:4px 8px}
+  #tr-root .tr-setting-execution{grid-template-columns:minmax(0,1fr) 124px;column-gap:12px}
+  #tr-root .tr-setting-execution>.tr-setting-help{grid-column:1 / -1}
+  #tr-root .tr-rule-tools{gap:4px}
+  #tr-root .tr-rule-tools button,#tr-root .tr-rule-tools .tr-icon{min-width:44px;min-height:44px}
+  #tr-root .tr-change-log>summary{min-height:44px}
+}

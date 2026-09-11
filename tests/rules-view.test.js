@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { renderRulesView, summarizeRuleFind, ruleCountText } from '../rules-view.js';
+import { renderRulesView, summarizeRuleFind, ruleCountText, ruleExecutionStatus } from '../rules-view.js';
 
 test('collapsed rule summaries hide regex group internals and preserve literal parentheses', () => {
   assert.equal(summarizeRuleFind('不是([^，。！？]+)，而是([^。！？]+)'), '不是*，而是*');
@@ -30,7 +30,9 @@ test('rules stay compact and expose modal editing controls', () => {
   assert.ok(collapsed.indexOf('data-action="import-rules"') < collapsed.indexOf('data-action="export-rules"'));
   assert.match(collapsed, />新增</);
   assert.doesNotMatch(collapsed, /＋ 新增/);
-  assert.match(collapsed, />人工审查</);
+  assert.match(collapsed, /自动检测，人工审查/);
+  assert.doesNotMatch(collapsed, /data-screen="settings"|处理方式：/);
+  assert.doesNotMatch(collapsed, /<select/);
   assert.doesNotMatch(collapsed, /已启用 1 \/ 1/);
   assert.equal(ruleCountText([rule]), '已启用 1 / 1');
   assert.match(collapsed, /placeholder="搜索"/);
@@ -58,4 +60,11 @@ test('rule counter reports enabled rules rather than search matches', () => {
   ];
   renderRulesView(rules, { search: '极其' }, 'review');
   assert.equal(ruleCountText(rules), '已启用 1 / 2');
+});
+
+test('rules status distinguishes automatic triggering, execution and disabled plugin', () => {
+  assert.equal(ruleExecutionStatus('review'), '自动检测，人工审查');
+  assert.equal(ruleExecutionStatus('auto'), '自动检测并应用');
+  assert.equal(ruleExecutionStatus('auto', { autoScan: false }), '已关闭自动检测，可手动检测');
+  assert.equal(ruleExecutionStatus('review', { enabled: false, autoScan: false }), '插件已停用');
 });
