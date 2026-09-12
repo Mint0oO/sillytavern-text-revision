@@ -228,6 +228,7 @@ export class RevisionUI {
     this.reviewSelection = null;
   }
   async detectPanelTarget() {
+    this.c.assertIdle();
     const epoch = this.panelEpoch, target = this.panelTarget;
     const messageId = this.c.resolveTarget(target);
     this.detecting = true;
@@ -235,11 +236,15 @@ export class RevisionUI {
     this.edit = null;
     this.render();
     try {
-      const round = await this.c.detect(messageId);
+      const round = await this.c.detect(messageId, { onReady: ready => {
+        if (epoch !== this.panelEpoch || !this.dialog.open || !this.c.sameTarget(target, this.panelTarget)) return;
+        this.panelTarget = this.targetForRound(ready);
+        this.panelRoundId = ready.id;
+        this.detecting = false;
+        this.say('检测完成，正在保存记录……');
+      } });
       if (epoch !== this.panelEpoch || !this.dialog.open || !this.c.sameTarget(target, this.panelTarget)) return null;
-      this.panelTarget = this.targetForRound(round);
-      this.panelRoundId = round.id;
-      this.c.selectedId = round.id;
+      this.say('');
       return round;
     } catch (error) {
       if (epoch !== this.panelEpoch || !this.dialog.open) return null;

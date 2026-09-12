@@ -131,7 +131,7 @@ export class RevisionController {
     try { this.target(round); return this.settings().enabled !== false && round.engineVersion === ENGINE_VERSION && round.rulesKey === rulesKey(this.settings()) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
     catch { return false; }
   }
-  async detect(messageId = this.latestReply(), { auto = false } = {}) {
+  async detect(messageId = this.latestReply(), { auto = false, onReady = () => {} } = {}) {
     this.assertIdle();
     if (this.settings().enabled === false) throw new Error('插件已停用，请先在设置中启用。');
     const c = this.context(), m = c.chat[messageId];
@@ -164,8 +164,13 @@ export class RevisionController {
     while (rounds.length > 30 || rounds.length > 1 && JSON.stringify(rounds).length > 4000000) rounds.shift();
     c.chatMetadata[KEY] = { total: round.number, rounds };
     this.selectedId = round.id;
-    this.onChange();
-    await c.saveChat();
+    // Publish computed results before storage finishes, while serializing writes.
+    this.busy = true;
+    try {
+      onReady(round);
+      this.onChange();
+      await c.saveChat();
+    } finally { this.busy = false; this.onChange(); }
     return round;
   }
   saveSettings() { this.context().saveSettingsDebounced(); }
