@@ -49,6 +49,7 @@ export class RevisionController {
     s.transparency = Math.max(0, Math.min(100, Number(s.transparency) || 0));
     s.autoScan ??= true;
     s.ruleExecution ??= 'review';
+    s.historyDetection ??= true;
     s.showLauncher ??= false;
     s.launcherTransparency ??= 0;
     s.launcherColor ??= 'theme';

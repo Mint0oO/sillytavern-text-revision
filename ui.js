@@ -707,6 +707,7 @@ export class RevisionUI {
     if (el.id === 'tr-plugin-enabled') { this.c.settings().enabled = el.checked; this.c.detectionSequence++; if (!el.checked) this.autoDetection?.cancel(); this.badge(); this.onPluginAvailabilityChange(); this.c.saveSettings(); this.render(); }
     if (el.id === 'tr-palette') { this.c.settings().palette = el.value; this.theme(); this.c.saveSettings(); }
     if (el.id === 'tr-auto') { this.c.settings().autoScan = el.checked; if (!el.checked) this.autoDetection?.cancel(); this.c.saveSettings(); }
+    if (el.id === 'tr-history-detection') { this.c.settings().historyDetection = el.checked; this.onPluginAvailabilityChange(); this.c.saveSettings(); }
     if (el.id === 'tr-rule-execution') {
       this.c.settings().ruleExecution = el.value; this.c.saveSettings();
       const help = this.dialog.querySelector('#tr-execution-help');

@@ -15,6 +15,7 @@ test('fresh settings use simple regex rules without legacy template controls', (
   const settings = fixture().ctl.settings();
   assert.equal(settings.enabled, true);
   assert.equal(settings.ruleExecution, 'review');
+  assert.equal(settings.historyDetection, true);
   assert.ok(settings.rules.length > 0);
   assert.ok(settings.rules.every(r => r.editorVersion === 1 && r.kind === 'regex' && r.execution === 'inherit'));
 });

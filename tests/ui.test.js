@@ -86,6 +86,22 @@ test('execution mode changes preserve the independent trigger and existing setti
   assert.match(help.textContent, /手动检测先展示结果/);
 });
 
+test('history detection switch changes only per-floor entry visibility', async () => {
+  const settings = { autoScan: true, enabled: true, historyDetection: true, ruleExecution: 'review' };
+  let syncs = 0, saves = 0;
+  const ui = Object.assign(Object.create(RevisionUI.prototype), {
+    c: { settings: () => settings, saveSettings() { saves++; } },
+    onPluginAvailabilityChange() { syncs++; },
+  });
+  await ui.change({ target: { id: 'tr-history-detection', checked: false, dataset: {}, hasAttribute: () => false } });
+  assert.equal(settings.historyDetection, false);
+  assert.equal(settings.enabled, true);
+  assert.equal(settings.autoScan, true);
+  assert.equal(settings.ruleExecution, 'review');
+  assert.equal(syncs, 1);
+  assert.equal(saves, 1);
+});
+
 test('clearing search restores all rules without changing delete selections', async () => {
   const selection = new Set(['keep']);
   let rendered = 0, focused = false;

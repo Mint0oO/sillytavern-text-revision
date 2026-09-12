@@ -11,6 +11,7 @@ export function renderSettingsView(s, { legend, slider, glyph }) {
       <h3 id="tr-running-title" tabindex="-1">运行设置</h3>
       ${toggle('tr-plugin-enabled', '启用插件', s.enabled !== false)}
       ${toggle('tr-auto', '自动检测', s.autoScan, '开启后，在 AI 回复完成时执行规则；关闭后仍可手动检测。')}
+      ${toggle('tr-history-detection', '历史检测', s.historyDetection !== false, '开启后显示每层检测图标；关闭后隐藏，不影响自动检测。')}
       ${field('tr-rule-execution', '处理方式', select('tr-rule-execution', [['review', '人工审查'], ['auto', '自动应用']], s.ruleExecution ?? 'review', 'aria-describedby="tr-execution-help"'), `<span id="tr-execution-help" role="status">${executionDescription(s.ruleExecution)}</span>`, 'tr-setting-execution')}
     </section>
     <section class="tr-settings-section" aria-labelledby="tr-scope-title">

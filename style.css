@@ -227,13 +227,19 @@
 @media(max-width:640px){#tr-root{width:calc(100vw - 16px);height:min(760px,calc(var(--tr-height,100dvh) - 16px))}#tr-root .tr-bar{gap:5px;padding-top:7px}#tr-root .tr-rule-tools{gap:0;margin-left:auto}#tr-root .tr-rule-tools button{padding-inline:4px}#tr-root .tr-submodal{width:calc(100vw - 32px)}#tr-root .tr-inline-editor{margin-left:12px;margin-right:4px}#tr-root .tr-mini-slider{max-width:200px}}
 @media(pointer:coarse){#tr-root .tr-rule-tools .tr-icon,#tr-root .tr-modal-head .tr-icon{min-width:44px;min-height:44px}#tr-root .tr-rule-tools>button{min-width:40px}}
 
-/* Per-message entry: the boxed pencil matches the supplied icon while staying
-   distinct from SillyTavern's plain edit pencil immediately to its right. */
-#chat .mes_buttons button.tr-message-scan{appearance:none;-webkit-appearance:none;border:0;background:transparent;color:inherit;font:inherit;line-height:1;display:inline-grid;place-items:center;box-sizing:border-box;cursor:pointer;padding:0;margin:0}
-#chat .mes_buttons button.tr-message-scan svg{display:block;width:20px;height:20px;pointer-events:none}
-#chat .mes_buttons button.tr-message-scan:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:4px}
-#chat .mes_buttons button.tr-message-scan:disabled{opacity:.45;cursor:not-allowed}
-@media(max-width:640px),(pointer:coarse){#chat .mes_buttons button.tr-message-scan{min-width:44px;min-height:44px}}
+/* Per-message entry: mimic a native .mes_button slot exactly (same div tag,
+   1em icon, native 1px 3px padding) so themes that float or wrap the toolbar
+   treat it as one ordinary icon and keep a single row. The larger touch target
+   comes from an out-of-flow ::before, which never widens the slot or pushes
+   neighbour icons onto another line. */
+#chat .mes_buttons .mes_button.tr-message-scan{position:relative;display:inline-grid;place-items:center;line-height:1;color:inherit;box-sizing:border-box;padding:1px 3px;margin:0}
+/* Widen only the inline hit area: the host clips horizontal overflow, while a
+   block-direction overflow would force a scrollbar in its toolbar. */
+#chat .mes_buttons .tr-message-scan::before{content:"";position:absolute;inset-block:0;inset-inline:-6px;border-radius:6px}
+#chat .mes_buttons .tr-message-scan svg{display:block;width:1em;height:1em;pointer-events:none}
+#chat .mes_buttons .tr-message-scan:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:4px}
+#chat .mes_buttons .tr-message-scan.is-disabled{opacity:.45;cursor:not-allowed;pointer-events:none}
+@media(max-width:640px),(pointer:coarse){#chat .mes_buttons .tr-message-scan::before{inset-inline:-11px}}
 
 /* Settings share one label/control grid; narrow screens stack wide controls. */
 #tr-root .tr-settings{--tr-setting-label:180px;width:100%;max-width:600px;margin:0 auto;padding:4px 0 20px}
