@@ -70,6 +70,18 @@ test('external edit, switched swipe and switched chat are rejected before writes
     await assert.rejects(f.ctl.commit(r)); assert.deepEqual(f.ctx.chat, before); assert.equal(f.renders(), 0);
   }
 });
+test('a detected floor follows a preceding deletion by unique identity and never falls back after target deletion', async () => {
+  const f = fixture();
+  const target = f.ctx.chat[0];
+  f.ctx.chat.unshift({ is_user: true, mes: '前一楼', extra: {} });
+  const round = await f.ctl.detect(1);
+  assert.equal(round.messageId, 1);
+  f.ctx.chat.shift();
+  assert.equal(f.ctl.target(round), target);
+  assert.equal(round.messageId, 0);
+  f.ctx.chat.shift();
+  await assert.rejects(f.ctl.commit(round), /已不存在|身份无法确认/);
+});
 test('save failure cannot report success and keeps proposed edits available for retry', async () => {
   const f = fixture(); const r = await f.ctl.detect(); const original = f.ctx.chat[0].mes; f.fail();
   await assert.rejects(f.ctl.commit(r), /未能确认保存/);
@@ -96,7 +108,7 @@ test('a stale host streaming processor cannot lock completed text; changed sourc
   const r = await f.ctl.detect();
   await f.ctl.commit(r); assert.equal(f.ctx.chat[0].mes.includes('极其'), false);
   f.ctx.chat[0].mes += '新内容';
-  await assert.rejects(f.ctl.commit(r), /过期/);
+  await assert.rejects(f.ctl.commit(r), /过期|已变化/);
 });
 
 test('old tag settings migrate into editable exclusion pairs without changing their meaning', () => {

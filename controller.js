@@ -71,14 +71,57 @@ export class RevisionController {
   history() { return this.context().chatMetadata?.[KEY]?.rounds ?? []; }
   current() { return this.history().find(r => r.id === this.selectedId) ?? this.history().at(-1); }
   latestReply() { return this.context().chat.findLastIndex(isReply); }
+  captureTarget(messageId) {
+    const c = this.context(), message = c.chat[messageId];
+    if (!isReply(message)) throw new Error('所选楼层不是可检测的 AI 回复。');
+    return { chatKey: chatKey(c), message, messageUid: message.extra?.[KEY]?.id ?? null };
+  }
+  resolveTarget(target) {
+    const c = this.context();
+    if (!target || target.chatKey !== chatKey(c)) throw new Error('聊天已切换，所选楼层已失效。');
+    let messageId = c.chat.indexOf(target.message);
+    if (messageId < 0 && target.messageUid) {
+      const matches = c.chat.map((message, id) => message?.extra?.[KEY]?.id === target.messageUid ? id : -1).filter(id => id >= 0);
+      if (matches.length === 1) messageId = matches[0];
+    }
+    const message = c.chat[messageId];
+    if (!isReply(message) || target.messageUid && message.extra?.[KEY]?.id !== target.messageUid) {
+      throw new Error('所选楼层已不存在或身份无法确认，请重新选择该楼层。');
+    }
+    target.message = message;
+    target.messageUid ??= message.extra?.[KEY]?.id ?? null;
+    return messageId;
+  }
+  locateRound(round) {
+    const c = this.context();
+    if (!round || round.chatKey !== chatKey(c) || !round.messageUid) return -1;
+    const matches = c.chat.map((message, id) => message?.extra?.[KEY]?.id === round.messageUid ? id : -1).filter(id => id >= 0);
+    if (matches.length !== 1 || !isReply(c.chat[matches[0]])) return -1;
+    round.messageId = matches[0];
+    return matches[0];
+  }
+  sameTarget(left, right) {
+    if (!left || !right || left.chatKey !== right.chatKey) return false;
+    if (left.messageUid && right.messageUid) return left.messageUid === right.messageUid;
+    return left.message === right.message;
+  }
+  freshRound(target) {
+    let messageId;
+    try { messageId = this.resolveTarget(target); } catch { return null; }
+    const message = this.context().chat[messageId], uid = message.extra?.[KEY]?.id;
+    if (!uid) return null;
+    const round = this.history().findLast(item => item.messageUid === uid && item.swipeId === swipeId(message) && item.expected === message.mes);
+    return round && this.editable(round) ? round : null;
+  }
   assertIdle() {
     if (this.busy) throw new Error('正在保存，请稍候。');
   }
   target(round, expected = round?.expected) {
     const c = this.context();
     if (!round || chatKey(c) !== round.chatKey) throw new Error('聊天已切换，请重新检测当前回复。');
-    const m = c.chat[round.messageId];
-    if (!isReply(m) || m.extra?.[KEY]?.id !== round.messageUid || swipeId(m) !== round.swipeId || m.mes !== expected) {
+    const messageId = this.locateRound(round), m = c.chat[messageId];
+    if (messageId < 0) throw new Error('所选楼层已不存在或身份无法确认，请重新选择该楼层。');
+    if (swipeId(m) !== round.swipeId || m.mes !== expected) {
       throw new Error('正文或回复版本已变化，请重新检测，避免覆盖你的修改。');
     }
     return m;
@@ -95,7 +138,7 @@ export class RevisionController {
     if (!isReply(m)) throw new Error('当前没有可检测的 AI 回复。');
     const sequence = ++this.detectionSequence;
     const settings = this.settings(), rules = clone(settings.rules), scope = normalizeScope(settings);
-    const snapshot = { key: chatKey(c), text: m.mes, swipe: swipeId(m), rules: rulesKey(settings), history: c.chatMetadata[KEY] };
+    const snapshot = { key: chatKey(c), target: this.captureTarget(messageId), text: m.mes, swipe: swipeId(m), rules: rulesKey(settings), history: c.chatMetadata[KEY] };
     const history = this.history();
     const previous = history.findLast(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m));
     if (auto && previous?.engineVersion === ENGINE_VERSION && previous.rulesKey === snapshot.rules && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) {
@@ -105,13 +148,16 @@ export class RevisionController {
     if (needsLanguage(rules)) await this.prepareLanguage();
     const round = await scanPrepared(snapshot.text, rules, { scope, context: c, executionDefault: settings.ruleExecution });
     const now = this.context();
-    if (sequence !== this.detectionSequence || chatKey(now) !== snapshot.key || now.chat[messageId] !== m || m.mes !== snapshot.text || swipeId(m) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || rulesKey(this.settings()) !== snapshot.rules || now.chatMetadata[KEY] !== snapshot.history) {
+    let currentMessageId = -1;
+    try { currentMessageId = this.resolveTarget(snapshot.target); } catch { /* Report the common stale-detection error below. */ }
+    const currentMessage = now.chat[currentMessageId];
+    if (sequence !== this.detectionSequence || chatKey(now) !== snapshot.key || !currentMessage || currentMessage.mes !== snapshot.text || swipeId(currentMessage) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || rulesKey(this.settings()) !== snapshot.rules || now.chatMetadata[KEY] !== snapshot.history) {
       throw new Error('检测期间正文或设置已变化，请重新检测。');
     }
     this.assertIdle();
-    m.extra ??= {};
-    m.extra[KEY] ??= { id: newId() };
-    Object.assign(round, { rulesKey: snapshot.rules, chatKey: chatKey(c), messageId, messageUid: m.extra[KEY].id, swipeId: swipeId(m), number: (c.chatMetadata[KEY]?.total ?? 0) + 1 });
+    currentMessage.extra ??= {};
+    currentMessage.extra[KEY] ??= { id: newId() };
+    Object.assign(round, { rulesKey: snapshot.rules, chatKey: chatKey(c), messageId: currentMessageId, messageUid: currentMessage.extra[KEY].id, swipeId: swipeId(currentMessage), number: (c.chatMetadata[KEY]?.total ?? 0) + 1 });
     const rounds = [...history, round];
     // Keep the complete latest round and bounded historical snapshots per chat.
     while (rounds.length > 30 || rounds.length > 1 && JSON.stringify(rounds).length > 4000000) rounds.shift();
@@ -125,6 +171,7 @@ export class RevisionController {
   async persistDraft() { await this.context().saveChat(); }
   async finishReview(round) {
     this.assertIdle();
+    this.target(round);
     if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测。');
     const c = this.context(), previous = round.reviewed, selections = round.groups.map(g => g.selected);
     this.busy = true; round.reviewed = true; round.groups.forEach(g => { g.selected = false; }); this.onChange();
@@ -134,6 +181,7 @@ export class RevisionController {
   }
   async commit(round, { undo = false, automatic = false } = {}) {
     this.assertIdle();
+    this.target(round);
     if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测后再应用。');
     const m = this.target(round), c = this.context(), before = m.mes, originalRound = clone(round), copy = clone(round);
     if (typeof document !== 'undefined' && document.querySelector(`.mes[mesid="${round.messageId}"] .edit_textarea`)) throw new Error('这条消息正在酒馆正文中编辑，请先完成或取消编辑。');

@@ -1,6 +1,7 @@
 import { RevisionController, verifyChatSave } from './controller.js';
 import { RevisionUI } from './ui.js';
 import { attachAutoDetection } from './auto-detection.js';
+import { attachMessageButtons } from './message-buttons.js';
 
 function init() {
   if (document.getElementById('tr-root')) return;
@@ -8,7 +9,8 @@ function init() {
   const getContext = () => SillyTavern.getContext();
   const c = new RevisionController(getContext, verifyChatSave);
   const ui = new RevisionUI(c);
-  attachAutoDetection(c, ui);
+  ui.autoDetection = attachAutoDetection(c, ui);
+  attachMessageButtons(c, ui);
 
   const addWandEntry = () => {
     const menu = document.getElementById('extensionsMenu');

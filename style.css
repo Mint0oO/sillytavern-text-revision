@@ -227,6 +227,14 @@
 @media(max-width:640px){#tr-root{width:calc(100vw - 16px);height:min(760px,calc(var(--tr-height,100dvh) - 16px))}#tr-root .tr-bar{gap:5px;padding-top:7px}#tr-root .tr-rule-tools{gap:0;margin-left:auto}#tr-root .tr-rule-tools button{padding-inline:4px}#tr-root .tr-submodal{width:calc(100vw - 32px)}#tr-root .tr-inline-editor{margin-left:12px;margin-right:4px}#tr-root .tr-mini-slider{max-width:200px}}
 @media(pointer:coarse){#tr-root .tr-rule-tools .tr-icon,#tr-root .tr-modal-head .tr-icon{min-width:44px;min-height:44px}#tr-root .tr-rule-tools>button{min-width:40px}}
 
+/* Per-message entry: the boxed pencil matches the supplied icon while staying
+   distinct from SillyTavern's plain edit pencil immediately to its right. */
+#chat .mes_buttons button.tr-message-scan{appearance:none;-webkit-appearance:none;border:0;background:transparent;color:inherit;font:inherit;line-height:1;display:inline-grid;place-items:center;box-sizing:border-box;cursor:pointer;padding:0;margin:0}
+#chat .mes_buttons button.tr-message-scan svg{display:block;width:20px;height:20px;pointer-events:none}
+#chat .mes_buttons button.tr-message-scan:focus-visible{outline:2px solid currentColor;outline-offset:2px;border-radius:4px}
+#chat .mes_buttons button.tr-message-scan:disabled{opacity:.45;cursor:not-allowed}
+@media(max-width:640px),(pointer:coarse){#chat .mes_buttons button.tr-message-scan{min-width:44px;min-height:44px}}
+
 /* Settings share one label/control grid; narrow screens stack wide controls. */
 #tr-root .tr-settings{--tr-setting-label:180px;width:100%;max-width:600px;margin:0 auto;padding:4px 0 20px}
 #tr-root .tr-settings-section{padding:14px 0 16px;border-bottom:1px solid var(--tr-border)}
