@@ -9,6 +9,10 @@ export const chatKey = c => JSON.stringify([c.groupId ?? null, c.characterId ?? 
 export const swipeId = m => m.swipe_id ?? 0;
 export const isReply = m => m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim();
 const rulesKey = settings => JSON.stringify([settings.enabled !== false, settings.ruleExecution ?? 'review', settings.rules]);
+export class DetectionCancelledError extends Error {
+  constructor() { super('检测任务已取消。'); this.name = 'DetectionCancelledError'; }
+}
+export const isDetectionCancelled = error => error?.name === 'DetectionCancelledError';
 
 export class RevisionController {
   constructor(getContext, verifySave, prepareLanguage = ensureLanguage) {
@@ -19,6 +23,8 @@ export class RevisionController {
     this.selectedId = null;
     this.prepareLanguage = prepareLanguage;
     this.detectionSequence = 0;
+    this.detectionTasks = new WeakMap();
+    this.writeTail = Promise.resolve();
   }
   settings() {
     const c = this.context();
@@ -131,15 +137,20 @@ export class RevisionController {
     try { this.target(round); return this.settings().enabled !== false && round.engineVersion === ENGINE_VERSION && round.rulesKey === rulesKey(this.settings()) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
     catch { return false; }
   }
-  async detect(messageId = this.latestReply(), { auto = false, onReady = () => {} } = {}) {
+  async detect(messageId = this.latestReply(), { auto = false, persist = true, signal, onReady = () => {} } = {}) {
     this.assertIdle();
     if (this.settings().enabled === false) throw new Error('插件已停用，请先在设置中启用。');
     const c = this.context(), m = c.chat[messageId];
     if (!c.chatId && !c.getCurrentChatId?.()) throw new Error('请先打开并保存一个聊天。');
     if (!isReply(m)) throw new Error('当前没有可检测的 AI 回复。');
-    const sequence = ++this.detectionSequence;
+    const sequence = this.detectionSequence, task = {};
+    this.detectionTasks.set(m, task);
+    const checkCancelled = () => {
+      if (signal?.aborted || sequence !== this.detectionSequence || this.detectionTasks.get(m) !== task) throw new DetectionCancelledError();
+    };
+    checkCancelled();
     const settings = this.settings(), rules = clone(settings.rules), scope = normalizeScope(settings);
-    const snapshot = { key: chatKey(c), target: this.captureTarget(messageId), text: m.mes, swipe: swipeId(m), rules: rulesKey(settings), history: c.chatMetadata[KEY] };
+    const snapshot = { key: chatKey(c), target: this.captureTarget(messageId), text: m.mes, swipe: swipeId(m), rules: rulesKey(settings) };
     const history = this.history();
     const previous = history.findLast(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m));
     if (auto && previous?.engineVersion === ENGINE_VERSION && previous.rulesKey === snapshot.rules && previous?.scope && scopeKey(previous.scope) === scopeKey(scope) && previous.expected === m.mes) {
@@ -147,45 +158,63 @@ export class RevisionController {
       return null;
     }
     if (needsLanguage(rules)) await this.prepareLanguage();
+    checkCancelled();
     const round = await scanPrepared(snapshot.text, rules, { scope, context: c, executionDefault: settings.ruleExecution });
+    checkCancelled();
     const now = this.context();
     let currentMessageId = -1;
     try { currentMessageId = this.resolveTarget(snapshot.target); } catch { /* Report the common stale-detection error below. */ }
     const currentMessage = now.chat[currentMessageId];
-    if (sequence !== this.detectionSequence || chatKey(now) !== snapshot.key || !currentMessage || currentMessage.mes !== snapshot.text || swipeId(currentMessage) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || rulesKey(this.settings()) !== snapshot.rules || now.chatMetadata[KEY] !== snapshot.history) {
+    if (chatKey(now) !== snapshot.key || !currentMessage || currentMessage.mes !== snapshot.text || swipeId(currentMessage) !== snapshot.swipe || scopeKey(this.settings()) !== scopeKey(scope) || rulesKey(this.settings()) !== snapshot.rules) {
       throw new Error('检测期间正文或设置已变化，请重新检测。');
     }
-    this.assertIdle();
+    if (this.busy) throw new DetectionCancelledError();
     currentMessage.extra ??= {};
     currentMessage.extra[KEY] ??= { id: newId() };
-    Object.assign(round, { rulesKey: snapshot.rules, chatKey: chatKey(c), messageId: currentMessageId, messageUid: currentMessage.extra[KEY].id, swipeId: swipeId(currentMessage), number: (c.chatMetadata[KEY]?.total ?? 0) + 1 });
-    const rounds = [...history, round];
+    Object.assign(round, { rulesKey: snapshot.rules, chatKey: chatKey(now), messageId: currentMessageId, messageUid: currentMessage.extra[KEY].id, swipeId: swipeId(currentMessage), number: (now.chatMetadata[KEY]?.total ?? 0) + 1 });
+    const rounds = [...this.history(), round];
     // Keep the complete latest round and bounded historical snapshots per chat.
     while (rounds.length > 30 || rounds.length > 1 && JSON.stringify(rounds).length > 4000000) rounds.shift();
-    c.chatMetadata[KEY] = { total: round.number, rounds };
+    now.chatMetadata[KEY] = { total: round.number, rounds };
     this.selectedId = round.id;
-    // Publish computed results before storage finishes, while serializing writes.
-    this.busy = true;
-    try {
-      onReady(round);
-      this.onChange();
-      await c.saveChat();
-    } finally { this.busy = false; this.onChange(); }
+    // Record persistence never locks reading, selection or draft editing.
+    onReady(round);
+    this.onChange({ type: 'detection', round });
+    if (persist) await this.persistDraft();
     return round;
   }
   saveSettings() { this.context().saveSettingsDebounced(); }
-  async persistDraft() { await this.context().saveChat(); }
+  enqueueWrite(operation, key = chatKey(this.context())) {
+    const next = this.writeTail.then(() => {
+      if (chatKey(this.context()) !== key) throw new DetectionCancelledError();
+      return operation();
+    });
+    this.writeTail = next.catch(() => {});
+    return next;
+  }
+  async persistDraft() { await this.enqueueWrite(() => this.context().saveChat()); }
   async finishReview(round) {
     this.assertIdle();
     this.target(round);
     if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测。');
     const c = this.context(), previous = round.reviewed, selections = round.groups.map(g => g.selected);
-    this.busy = true; round.reviewed = true; round.groups.forEach(g => { g.selected = false; }); this.onChange();
-    try { await c.saveChat(); await this.verifySave(c, round, round.expected); }
-    catch (error) { round.reviewed = previous; round.groups.forEach((g, i) => { g.selected = selections[i]; }); throw new Error(`未能确认审阅状态已保存。${error.message}`); }
+    let marked = false;
+    this.busy = true; this.onChange({ type: 'busy' });
+    try { await this.enqueueWrite(async () => {
+      this.target(round);
+      if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测。');
+      round.reviewed = true; round.groups.forEach(g => { g.selected = false; });
+      marked = true;
+      await c.saveChat(); await this.verifySave(c, round, round.expected);
+    }, round.chatKey); }
+    catch (error) {
+      if (marked) { round.reviewed = previous; round.groups.forEach((g, i) => { g.selected = selections[i]; }); }
+      if (isDetectionCancelled(error)) throw error;
+      throw new Error(`未能确认审阅状态已保存。${error.message}`);
+    }
     finally { this.busy = false; this.onChange(); }
   }
-  async commit(round, { undo = false, automatic = false } = {}) {
+  async commit(round, { undo = false, automatic = false, signal } = {}) {
     this.assertIdle();
     this.target(round);
     if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测后再应用。');
@@ -207,38 +236,45 @@ export class RevisionController {
     }
     if (!changed) return 0;
     this.busy = true;
-    this.onChange();
-    try {
-      this.target(round, before);
-      m.mes = copy.expected;
-      if (Array.isArray(m.swipes)) m.swipes[round.swipeId] = m.mes;
-      delete m.extra.token_count;
-      if (m.swipe_info?.[round.swipeId]?.extra) delete m.swipe_info[round.swipeId].extra.token_count;
-      c.chatMetadata.tainted = true;
-      Object.assign(round, copy);
-      c.updateMessageBlock(round.messageId, m);
-      // Emit the same edit/update events used by the built-in editor (cache invalidation).
-      await c.eventSource.emit(c.eventTypes.MESSAGE_EDITED, round.messageId);
-      if (chatKey(this.context()) !== round.chatKey || m.mes !== copy.expected) throw new Error('保存期间正文发生变化，请重新检测。');
-      if (c.eventTypes.MESSAGE_UPDATED) await c.eventSource.emit(c.eventTypes.MESSAGE_UPDATED, round.messageId);
-      if (chatKey(this.context()) !== round.chatKey || m.mes !== copy.expected) throw new Error('保存期间正文发生变化，请重新检测。');
-      await c.saveChat();
-      // saveChat can swallow network failures; read back the current chat to verify.
-      await this.verifySave(c, round, m.mes);
-      return changed;
-    } catch (error) {
-      // Preserve the proposed draft and roll back only our own still-current text.
-      if (m.mes === copy.expected) {
-        m.mes = before;
-        if (oldSwipes === undefined) delete m.swipes; else m.swipes = oldSwipes;
-        m.extra = oldExtra;
-        if (oldSwipeInfo === undefined) delete m.swipe_info; else m.swipe_info = oldSwipeInfo;
-        for (const key of Object.keys(round)) if (!Object.hasOwn(originalRound, key)) delete round[key];
-        Object.assign(round, originalRound);
-        if (chatKey(this.context()) === round.chatKey) c.updateMessageBlock(round.messageId, m);
+    this.onChange({ type: 'busy' });
+    try { return await this.enqueueWrite(async () => {
+      let wroteBody = false;
+      try {
+        if (signal?.aborted) throw new DetectionCancelledError();
+        if (this.target(round, before) !== m) throw new Error('正文身份已变化，请重新检测。');
+        if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测。');
+        m.mes = copy.expected;
+        wroteBody = true;
+        if (Array.isArray(m.swipes)) m.swipes[round.swipeId] = m.mes;
+        delete m.extra.token_count;
+        if (m.swipe_info?.[round.swipeId]?.extra) delete m.swipe_info[round.swipeId].extra.token_count;
+        c.chatMetadata.tainted = true;
+        Object.assign(round, copy);
+        c.updateMessageBlock(round.messageId, m);
+        // Emit the same edit/update events used by the built-in editor (cache invalidation).
+        await c.eventSource.emit(c.eventTypes.MESSAGE_EDITED, round.messageId);
+        if (chatKey(this.context()) !== round.chatKey || m.mes !== copy.expected) throw new Error('保存期间正文发生变化，请重新检测。');
+        if (c.eventTypes.MESSAGE_UPDATED) await c.eventSource.emit(c.eventTypes.MESSAGE_UPDATED, round.messageId);
+        if (chatKey(this.context()) !== round.chatKey || m.mes !== copy.expected) throw new Error('保存期间正文发生变化，请重新检测。');
+        await c.saveChat();
+        // saveChat can swallow network failures; read back the current chat to verify.
+        await this.verifySave(c, round, m.mes);
+        return changed;
+      } catch (error) {
+        if (isDetectionCancelled(error)) throw error;
+        // Preserve the proposed draft and roll back only our own still-current text.
+        if (wroteBody && m.mes === copy.expected) {
+          m.mes = before;
+          if (oldSwipes === undefined) delete m.swipes; else m.swipes = oldSwipes;
+          m.extra = oldExtra;
+          if (oldSwipeInfo === undefined) delete m.swipe_info; else m.swipe_info = oldSwipeInfo;
+          for (const key of Object.keys(round)) if (!Object.hasOwn(originalRound, key)) delete round[key];
+          Object.assign(round, originalRound);
+          if (chatKey(this.context()) === round.chatKey) c.updateMessageBlock(round.messageId, m);
+        }
+        throw new Error(`未能确认保存成功，修改建议仍保留。${error.message}`);
       }
-      throw new Error(`未能确认保存成功，修改建议仍保留。${error.message}`);
-    } finally { this.busy = false; this.onChange(); }
+    }, round.chatKey); } finally { this.busy = false; this.onChange(); }
   }
   selectedCount(round) { return round?.groups.filter(g => g.selected && ready(g)).length ?? 0; }
 }

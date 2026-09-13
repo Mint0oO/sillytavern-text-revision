@@ -1,5 +1,5 @@
 import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, needsLanguage } from './engine.js';
-import { clone } from './controller.js';
+import { clone, isDetectionCancelled } from './controller.js';
 import { ensureLanguage } from './language.js';
 import { createRuleDraft, simpleRule } from './rule-editor.js';
 import { renderRulesView, ruleCountText } from './rules-view.js';
@@ -125,7 +125,13 @@ export class RevisionUI {
       this.returnFocus?.focus?.();
       this.onMainClosed();
     });
-    this.c.onChange = () => { if (this.edit && this.edit.roundId !== this.panelRound()?.id) this.edit = null; this.badge(); if (this.dialog.open && !['extract', 'exclude'].includes(this.screen) && !(this.screen === 'rules' && this.ruleId !== null)) this.render(); };
+    this.c.onChange = event => {
+      if (event?.type === 'busy') { this.updateBusyControls(); return; }
+      this.badge();
+      if (event?.type === 'detection' && this.panelRound()?.id !== event.round.id) return;
+      if (this.edit && this.edit.roundId !== this.panelRound()?.id) this.edit = null;
+      if (this.dialog.open && !['extract', 'exclude'].includes(this.screen) && !(this.screen === 'rules' && this.ruleId !== null)) this.render();
+    };
     this.viewport = () => {
       const height = window.visualViewport?.height ?? window.innerHeight;
       const top = window.visualViewport?.offsetTop ?? 0;
@@ -190,7 +196,7 @@ export class RevisionUI {
     this.launcher.addEventListener('pointercancel', finish);
     this.launcher.addEventListener('lostpointercapture', finish);
   }
-  async run(action) { try { await action(); } catch (error) { this.say(error.message, true); } }
+  async run(action) { try { await action(); } catch (error) { if (!isDetectionCancelled(error)) this.say(error.message, true); } }
   say(text, error = false) {
     const el = this.dialog.querySelector('.tr-status');
     el.textContent = text;
@@ -219,7 +225,7 @@ export class RevisionUI {
   }
   endPanelSession() {
     this.panelEpoch++;
-    this.c.detectionSequence++;
+    this.panelDetection?.abort();
     this.panelTarget = null;
     this.panelRoundId = null;
     this.detecting = false;
@@ -229,6 +235,9 @@ export class RevisionUI {
   }
   async detectPanelTarget() {
     this.c.assertIdle();
+    this.panelDetection?.abort();
+    const detection = new AbortController();
+    this.panelDetection = detection;
     const epoch = this.panelEpoch, target = this.panelTarget;
     const messageId = this.c.resolveTarget(target);
     this.detecting = true;
@@ -236,21 +245,19 @@ export class RevisionUI {
     this.edit = null;
     this.render();
     try {
-      const round = await this.c.detect(messageId, { onReady: ready => {
+      const round = await this.c.detect(messageId, { signal: detection.signal, onReady: ready => {
         if (epoch !== this.panelEpoch || !this.dialog.open || !this.c.sameTarget(target, this.panelTarget)) return;
         this.panelTarget = this.targetForRound(ready);
         this.panelRoundId = ready.id;
         this.detecting = false;
-        this.say('检测完成，正在保存记录……');
       } });
       if (epoch !== this.panelEpoch || !this.dialog.open || !this.c.sameTarget(target, this.panelTarget)) return null;
-      this.say('');
       return round;
     } catch (error) {
-      if (epoch !== this.panelEpoch || !this.dialog.open) return null;
+      if (isDetectionCancelled(error) || epoch !== this.panelEpoch || !this.dialog.open) return null;
       throw error;
     } finally {
-      if (epoch === this.panelEpoch) { this.detecting = false; if (this.dialog.open) this.render(); }
+      if (epoch === this.panelEpoch && this.panelDetection === detection && this.detecting) { this.detecting = false; if (this.dialog.open) this.render(); }
     }
   }
   async open(messageId, { force = messageId !== undefined, round = null } = {}) {
@@ -287,7 +294,6 @@ export class RevisionUI {
     }
     this.render();
     if (this.c.settings().enabled !== false && this.panelTarget && (force || !this.panelRound())) await this.detectPanelTarget();
-    this.render();
   }
   async openDetected(round) {
     if (this.c.settings().enabled === false) return false;
@@ -297,7 +303,7 @@ export class RevisionUI {
     await this.open(undefined, { force: false, round });
     return true;
   }
-  resetChat() { this.endPanelSession(); this.historical = null; this.expandedRoundId = null; this.c.selectedId = null; this.screen = 'review'; this.c.onChange(); }
+  resetChat() { this.endPanelSession(); this.say(''); this.historical = null; this.expandedRoundId = null; this.c.selectedId = null; this.screen = 'review'; this.c.onChange(); }
   theme() {
     const s = this.c.settings();
     this.dialog.dataset.theme = s.theme;
@@ -321,11 +327,23 @@ export class RevisionUI {
     this.dialog.querySelector('.tr-foot').innerHTML = '';
     const draw = { review: 'review', snapshot: 'review', rules: 'rulesView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
     this[draw]();
-    if (this.c.busy) this.dialog.querySelectorAll('button, input, select, textarea').forEach(el => { if (!dismissActions.has(el.dataset.action)) el.disabled = true; });
+    this.updateBusyControls();
     this.dialog.querySelector('.tr-main').scrollTop = scroll;
     this.badge();
   }
   body(html) { this.dialog.querySelector('.tr-main').innerHTML = html; }
+  updateBusyControls() {
+    this.savingControls ??= new Map();
+    for (const [el, disabled] of this.savingControls) { el.disabled = disabled; el.removeAttribute('data-tr-saving'); }
+    this.savingControls.clear();
+    if (!this.c.busy) return;
+    this.dialog.querySelectorAll('button, input, select, textarea').forEach(el => {
+      if (dismissActions.has(el.dataset.action) || el.dataset.screen) return;
+      this.savingControls.set(el, el.disabled);
+      if (!el.disabled) el.setAttribute('data-tr-saving', '');
+      el.disabled = true;
+    });
+  }
   legend() { return '<div class="tr-legend"><del>删除</del><ins>新增</ins><mark>待改</mark></div>'; }
   review() {
     this.reviewSelection = null;
@@ -336,7 +354,7 @@ export class RevisionUI {
     if (!r) { this.body(`<div class="tr-empty">${this.panelTarget ? '尚未获得所选楼层的检测结果。' : '打开一条 AI 回复后开始检测。'}${button(this.panelTarget ? '重新检测' : '检测最新回复', `data-action="${this.panelTarget ? 'scan' : 'scan-latest'}"`)}</div>`); return; }
     const editable = !history && this.c.editable(r);
     const floor = this.c.locateRound(r);
-    this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段${floor >= 0 ? `　${floor}#` : ''}</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${r.reviewed ? '<p class="tr-meta">本轮已完成审阅，保留项不再提醒。</p>' : ''}${!editable && !history ? `<p class="tr-meta">${floor < 0 ? '所选楼层已不存在或身份无法确认，请重新选择该楼层。' : '正文或检测范围已变化，请重新检测。'}</p>` : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
+    this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段${floor >= 0 ? `　${floor}#` : ''}</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${!editable && !history ? `<p class="tr-meta">${floor < 0 ? '所选楼层已不存在或身份无法确认，请重新选择该楼层。' : '正文或检测范围已变化，请重新检测。'}</p>` : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
     if (r.log?.length) this.dialog.querySelector('.tr-main').insertAdjacentHTML('beforeend', renderChangeLog(r.log));
     if (!history) this.reviewFooter(r, editable);
   }
@@ -541,7 +559,7 @@ export class RevisionUI {
     if (data.action === 'cancel-rule' && this.ruleModal.open) { this.closeRuleModal(); return; }
     if (data.action === 'cancel-import') { this.importModal.close(); return; }
     if (data.action === 'cancel-scope') { this.scopeModal.close(); return; }
-    if (this.c.busy) return;
+    if (this.c.busy && !data.screen) return;
     if (data.action === 'clear-rule-search') {
       this.ruleFilters.search = ''; this.render();
       this.dialog.querySelector('[data-rule-filter="search"]')?.focus({ preventScroll: true });
@@ -655,8 +673,8 @@ export class RevisionUI {
       }
       case 'delete-sentence': await this.finishEdit(''); break;
       case 'finish-edit': await this.finishEdit(); break;
-      case 'apply': await this.c.commit(this.panelRound()); this.say('已应用并确认保存，后续上下文将使用修改稿。'); break;
-      case 'undo': await this.c.commit(this.panelRound(), { undo: true }); this.say('已撤销上次应用并确认保存。'); break;
+      case 'apply': this.say('正在应用并保存……'); await this.c.commit(this.panelRound()); this.say('已应用并确认保存，后续上下文将使用修改稿。'); break;
+      case 'undo': this.say('正在撤销并保存……'); await this.c.commit(this.panelRound(), { undo: true }); this.say('已撤销上次应用并确认保存。'); break;
     }
   }
   input(e) {

@@ -22,6 +22,7 @@
 #tr-root button{appearance:none;border:0;border-radius:4px;background:transparent;padding:6px 8px;cursor:pointer;line-height:1.5;touch-action:manipulation}
 #tr-root button:hover:not(:disabled){background:var(--tr-soft)}
 #tr-root button:disabled{opacity:.45;cursor:default}
+#tr-root [data-tr-saving]:disabled{opacity:1}
 #tr-root button:focus-visible,#tr-root input:focus-visible,#tr-root select:focus-visible,#tr-root textarea:focus-visible,#tr-root summary:focus-visible{outline:2px solid var(--tr-muted);outline-offset:2px}
 #tr-root .tr-primary{background:var(--tr-btn);color:var(--tr-btn-text);padding:8px 12px}
 #tr-root .tr-primary:hover:not(:disabled){background:var(--tr-btn)}

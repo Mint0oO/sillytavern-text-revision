@@ -20,33 +20,36 @@ function fixture() {
   const ui = Object.assign(Object.create(RevisionUI.prototype), {
     c: ctl, screen: 'review', panelEpoch: 1, panelTarget: ctl.captureTarget(0),
     panelRoundId: null, detecting: false, edit: null, drafts: new Map(),
-    dialog: { open: true }, html: '', status: '',
+    dialog: { open: true }, html: '', status: '', renders: 0,
     say(text) { this.status = text; },
     body(html) { this.html = html; },
-    render() { this.review(); }, reviewFooter() {},
+    render() { this.renders++; this.review(); }, reviewFooter() {},
   });
   ctl.onChange = () => { if (ui.dialog.open) ui.render(); };
   return { ctx, ctl, ui, entered, saved };
 }
 
-test('manual results render before storage finishes and writes stay locked until it settles', async () => {
+test('manual results remain interactive during record storage without redrawing when it settles', async () => {
   const f = fixture(), pending = f.ui.detectPanelTarget();
   await f.entered.promise;
   assert.match(f.ui.html, /1处问题/);
   assert.doesNotMatch(f.ui.html, /正在检测/);
-  assert.match(f.ui.status, /正在保存记录/);
+  assert.equal(f.ui.status, '');
   assert.equal(f.ui.detecting, false);
-  assert.equal(f.ctl.busy, true);
-  await assert.rejects(f.ctl.commit(f.ui.panelRound()), /正在保存/);
-  await assert.rejects(f.ui.detectPanelTarget(), /正在保存/);
-  await assert.rejects(f.ctl.finishReview(f.ui.panelRound()), /正在保存/);
-  assert.match(f.ui.html, /1处问题/, 'a second scan cannot clear the visible result');
+  assert.equal(f.ctl.busy, false);
+  f.ctl.assertIdle();
+  const renders = f.ui.renders;
+  f.ui.panelRound().groups[0].selected = false;
+  f.ui.edit = { roundId: f.ui.panelRoundId, text: '正在输入的草稿' };
   f.saved.resolve();
   const round = await pending;
   assert.equal(f.ctl.busy, false);
   assert.equal(f.ui.status, '');
   assert.equal(f.ui.panelRound(), round);
   assert.equal(f.ctl.editable(round), true);
+  assert.equal(round.groups[0].selected, false);
+  assert.equal(f.ui.edit.text, '正在输入的草稿');
+  assert.equal(f.ui.renders, renders, 'record save completion must not rebuild the editor or move its caret');
 });
 
 test('a rejected detection save keeps suggestions, reports the error and releases the lock', async () => {
@@ -84,13 +87,13 @@ test('closing before matching completes discards the result without saving or re
   assert.equal(f.ctl.busy, false);
 });
 
-test('automatic detection still awaits storage before returning its result', async () => {
+test('callers may await record durability without blocking the review UI', async () => {
   const f = fixture();
   let returned = false;
   const pending = f.ctl.detect(0, { auto: true }).then(round => { returned = true; return round; });
   await f.entered.promise;
   assert.equal(returned, false);
-  assert.equal(f.ctl.busy, true);
+  assert.equal(f.ctl.busy, false);
   f.saved.resolve();
   assert.equal((await pending).count, 1);
   assert.equal(f.ctl.busy, false);

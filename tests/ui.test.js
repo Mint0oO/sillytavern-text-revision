@@ -142,7 +142,7 @@ test('the panel reads its own round instead of a background-selected round and c
   const rounds = [{ id: 'floor-9' }, { id: 'background-latest' }];
   const ui = Object.assign(Object.create(RevisionUI.prototype), {
     c: { history: () => rounds, selectedId: 'background-latest', detectionSequence: 3 },
-    panelRoundId: 'floor-9', panelTarget: { id: 9 }, panelEpoch: 4, detecting: true,
+    panelRoundId: 'floor-9', panelTarget: { id: 9 }, panelEpoch: 4, detecting: true, panelDetection: new AbortController(),
     drafts: new Map([['draft', {}]]), edit: { roundId: 'floor-9' }, reviewSelection: {},
   });
   assert.equal(ui.panelRound(), rounds[0]);
@@ -151,7 +151,8 @@ test('the panel reads its own round instead of a background-selected round and c
   assert.equal(ui.panelTarget, null);
   assert.equal(ui.detecting, false);
   assert.equal(ui.drafts.size, 0);
-  assert.equal(ui.c.detectionSequence, 4);
+  assert.equal(ui.c.detectionSequence, 3, 'closing the panel must not cancel background detection');
+  assert.equal(ui.panelDetection.signal.aborted, true);
 });
 
 test('review statistics show the host floor id and never borrow the controller current round', () => {

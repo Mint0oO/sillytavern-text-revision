@@ -1,17 +1,18 @@
-import { chatKey, isReply, swipeId } from './controller.js';
+import { chatKey, isReply, swipeId, isDetectionCancelled } from './controller.js';
 
 // Completion signals are debounced. While the main panel is open, one latest
 // completed reply is retained and processed only after that panel closes.
 export function attachAutoDetection(c, ui, clock = { setTimeout: (fn, delay) => setTimeout(fn, delay), clearTimeout: id => clearTimeout(id) }) {
   const ctx = c.context(), types = ctx.eventTypes ?? ctx.event_types;
   let timer, epoch = 0, running = false, pending = null, deferred = null, readyToShow = null, handled = null;
+  let activeDetection = null;
   const on = (type, callback) => { if (types[type]) ctx.eventSource.on(types[type], callback); };
   const enabled = () => c.settings().enabled !== false && c.settings().autoScan;
   const sameSnapshot = (left, right) => Boolean(left && right && left.key === right.key && left.message === right.message && left.text === right.text && left.swipe === right.swipe);
   const clearTimer = () => { clock.clearTimeout(timer); timer = null; };
   const clear = () => {
     epoch++;
-    c.detectionSequence++;
+    activeDetection?.abort();
     clearTimer();
     pending = null;
     deferred = null;
@@ -68,17 +69,22 @@ export function attachAutoDetection(c, ui, clock = { setTimeout: (fn, delay) => 
     if (messageId < 0) return;
     if (ui.isMainOpen()) { deferred = { ...snapshot, reveal: true }; return; }
     running = true;
+    activeDetection = new AbortController();
     try {
-      let round = await c.detect(messageId, { auto: true });
+      let round = await c.detect(messageId, { auto: true, persist: false, signal: activeDetection.signal });
       round ??= c.freshRound(snapshot.target);
       if (snapshot.epoch !== epoch || snapshot.key !== chatKey(c.context()) || !round || !enabled()) return;
-      if (round.count && c.editable(round)) await c.commit(round, { automatic: true });
+      // An actual automatic edit saves the new body, log and detection together.
+      const changed = round.count && c.editable(round) ? await c.commit(round, { automatic: true, signal: activeDetection.signal }) : 0;
       if (snapshot.epoch !== epoch || snapshot.key !== chatKey(c.context()) || !enabled() || !c.editable(round)) return;
       markHandled(snapshot);
       if (snapshot.reveal || round.count && !round.reviewed) await showOrRetain(round, snapshot);
+      // Review-only results are visible and interactive before record persistence.
+      if (!changed) await c.persistDraft();
     } catch (error) {
-      if (snapshot.epoch === epoch) ui.say(error.message, true);
+      if (snapshot.epoch === epoch && !isDetectionCancelled(error)) { handled = null; ui.say(error.message, true); }
     } finally {
+      activeDetection = null;
       running = false;
       if (pending) arm();
     }
@@ -100,7 +106,10 @@ export function attachAutoDetection(c, ui, clock = { setTimeout: (fn, delay) => 
   }
 
   ui.onMainClosed = () => afterPanelClose().catch(error => ui.say(error.message, true));
-  on('GENERATION_STARTED', () => { pending = null; clearTimer(); c.detectionSequence++; });
+  on('GENERATION_STARTED', (type, options, dryRun) => {
+    if (dryRun || type === 'quiet') return;
+    clear();
+  });
   on('CHARACTER_MESSAGE_RENDERED', schedule);
   on('GENERATION_ENDED', () => schedule(c.latestReply()));
   on('GENERATION_STOPPED', () => schedule(c.latestReply()));
