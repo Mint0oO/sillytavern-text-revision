@@ -128,11 +128,15 @@
 #tr-root .tr-rows>.tr-row:last-child{margin-bottom:0}
 #tr-root .tr-row-toggle,#tr-root .tr-row-text{display:block;width:100%;padding:5px 8px;text-align:left;border-radius:0;min-height:38px;color:var(--tr-ink)}
 #tr-root .tr-row-toggle .tr-sentence{display:block}
-#tr-root .tr-row-editable .tr-sentence::before{content:"";float:right;width:30px;height:24px}
-#tr-root .tr-row-has-state .tr-sentence::before{width:82px}
-#tr-root .tr-row>.tr-icon{position:absolute;right:4px;top:-1px;width:28px;min-width:28px;min-height:28px;height:28px;padding:4px}
-#tr-root .tr-row>.tr-icon svg{width:15px;height:15px}
-#tr-root .tr-row-state{position:absolute;right:34px;top:4px;padding:1px 5px;border-radius:5px;background:var(--tr-soft);color:var(--tr-muted);font-size:11px;line-height:20px;white-space:nowrap}
+#tr-root .tr-row-editable .tr-sentence::before{content:"";float:right;width:62px;height:24px}
+#tr-root .tr-row-has-state .tr-sentence::before{width:92px}
+#tr-root .tr-row-actions{position:absolute;right:4px;top:-1px;z-index:2;display:flex;align-items:center;gap:1px}
+#tr-root .tr-row-actions>.tr-icon{position:static;width:28px;min-width:28px;min-height:28px;height:28px;padding:4px}
+#tr-root .tr-row-actions>.tr-icon svg{width:15px;height:15px}
+#tr-root .tr-quick-menu{position:absolute;right:58px;top:0;z-index:3;display:flex;align-items:stretch;gap:2px;padding:3px;border:1px solid var(--tr-border);border-radius:6px;background:var(--tr-surface);box-shadow:0 5px 16px #0003;white-space:nowrap}
+#tr-root .tr-quick-menu button{min-height:32px;padding:4px 9px;color:var(--tr-ink);font-size:12px}
+#tr-root .tr-quick-menu .tr-delete{color:var(--tr-danger,#b65b5b)}
+#tr-root .tr-row-state{position:absolute;right:62px;top:4px;padding:1px 5px;border-radius:5px;background:var(--tr-soft);color:var(--tr-muted);font-size:11px;line-height:20px;white-space:nowrap}
 #tr-root .tr-row-toggle:hover:not(:disabled){background:color-mix(in srgb,var(--tr-soft) 40%,transparent)}
 #tr-root .tr-selected{background:color-mix(in srgb,var(--tr-soft) 58%,var(--tr-surface));box-shadow:inset 2px 0 color-mix(in srgb,var(--tr-muted) 58%,transparent),0 5px 10px -9px color-mix(in srgb,var(--tr-ink) 55%,transparent)}
 #tr-root .tr-row-toggle:focus-visible{outline:2px solid var(--tr-muted);outline-offset:-2px}

@@ -9,7 +9,7 @@ import { renderSettingsView, executionDescription } from './settings-view.js';
 import { stringifyRuleSet, parseRuleSet, applyRuleSet, MAX_RULE_SET_BYTES } from './rule-transfer.js';
 
 const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
-const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : name === 'chevron-down' ? '<path d="m6 9 6 6 6-6"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
+const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : name === 'chevron-down' ? '<path d="m6 9 6 6 6-6"/>' : name === 'more' ? '<circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
 const icon = (name, label, attrs) => button(glyph(name), `aria-label="${label}" class="tr-icon" ${attrs}`);
 const dismissActions = new Set(['close', 'cancel-rule', 'cancel-import', 'cancel-scope']);
 
@@ -381,7 +381,8 @@ export class RevisionUI {
       const d = this.edit;
       editor = `<div class="tr-inline-editor"><label class="tr-edit-field"><span class="tr-label">修改后</span><textarea id="tr-edit" aria-label="编辑整句" rows="3">${esc(d.text)}</textarea></label><details class="tr-candidates" ${d.expanded ? 'open' : ''}><summary>替换候选</summary>${d.matches.filter(m => m.options.length || m.remove).map(m => `<div class="tr-candidate"><label for="tr-option-${m.id}">${esc(m.old)}</label><div class="tr-replace">${m.options.length ? `<select id="tr-option-${m.id}" data-option="${m.id}"><option value="" disabled ${m.value === null || m.value === '' ? 'selected' : ''}>替换为…</option>${m.options.map((v, i) => `<option value="${i}" ${m.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>${m.options.length > 1 ? button('换一个', `data-random="${m.id}"`) : ''}` : '<span class="tr-meta">未设置替换词</span>'}</div>${button('删除', `class="tr-delete" data-delete-match="${m.id}" aria-pressed="${m.value === ''}"`)}</div>`).join('') || '<p class="tr-meta">请直接编辑整句。</p>'}</details><div class="tr-edit-actions"><div>${button('不改这句', `data-keep="${g.id}"`)}${button('删除整句', 'class="tr-delete-sentence" data-action="delete-sentence"')}</div><div>${button('取消', 'data-action="cancel-edit"')}${button('完成', 'class="tr-primary" data-action="finish-edit"')}</div></div></div>`;
     }
-    return `<section data-group="${g.id}" class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state ? 'tr-row-has-state' : ''}">${content}${state}${editable ? icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`) : ''}${editor}</section>`;
+    const actions = editable && !editing ? `<div class="tr-row-actions">${icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`)}<button type="button" class="tr-icon tr-more" aria-label="展开第${g.id + 1}句快捷操作" aria-expanded="false" data-quick-toggle="${g.id}">${glyph('more')}</button><div class="tr-quick-menu" data-quick-menu="${g.id}" hidden><button type="button" data-quick="keep" data-quick-group="${g.id}">保留</button><button type="button" class="tr-delete" data-quick="delete" data-quick-group="${g.id}">删除</button></div></div>` : '';
+    return `<section data-group="${g.id}" class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state ? 'tr-row-has-state' : ''}">${content}${state}${actions}${editor}</section>`;
   }
   refreshReviewRows(r, ids) {
     const editable = this.c.editable(r), rows = this.selectionState(r);
@@ -573,6 +574,32 @@ export class RevisionUI {
       if (ready(g)) g.selected = !g.selected;
       this.updateReviewSelection(r, [g]);
       if (e.detail === 0) b.focus({ preventScroll: true });
+      return;
+    }
+    if (data.quickToggle !== undefined) {
+      const row = b.closest('.tr-row'), menu = row?.querySelector(`[data-quick-menu="${CSS.escape(String(data.quickToggle))}"]`);
+      if (!menu) return;
+      this.dialog.querySelectorAll('.tr-quick-menu:not([hidden])').forEach(other => {
+        if (other === menu) return;
+        other.hidden = true;
+        other.closest('.tr-row')?.querySelector('[data-quick-toggle]')?.setAttribute('aria-expanded', 'false');
+      });
+      menu.hidden = !menu.hidden;
+      b.setAttribute('aria-expanded', String(!menu.hidden));
+      return;
+    }
+    if (data.quick !== undefined) {
+      const r = this.panelRound(), id = Number(data.quickGroup), g = r?.groups[id];
+      this.c.target(r); this.c.assertIdle();
+      if (!g || !this.c.editable(r)) throw new Error('正文或检测范围已变化，请重新检测。');
+      if (this.edit && this.edit.groupId !== id) throw new Error('请先完成或取消当前编辑。');
+      if (data.quick === 'keep') {
+        g.kept = true; g.selected = false; g.matches.forEach(m => { m.done = true; });
+      } else if (data.quick === 'delete') {
+        g.kept = false; g.manual = true; g.draft = ''; g.selected = true;
+      }
+      this.edit = null;
+      this.refreshReviewRows(r, [id]); this.badge(); await this.c.persistDraft();
       return;
     }
     if (data.screen) {
