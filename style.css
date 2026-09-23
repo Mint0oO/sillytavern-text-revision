@@ -128,7 +128,9 @@
 #tr-root .tr-rows>.tr-row:last-child{margin-bottom:0}
 #tr-root .tr-row-toggle,#tr-root .tr-row-text{display:block;width:100%;padding:5px 8px;text-align:left;border-radius:0;min-height:38px;color:var(--tr-ink)}
 #tr-root .tr-row-toggle .tr-sentence{display:block}
-#tr-root .tr-row-editable .tr-sentence::before{content:"";float:right;width:62px;height:1lh}
+/* A tall float can still touch the next Android line box. Its width reserves
+   the icon area on line one; one pixel of height keeps later lines full width. */
+#tr-root .tr-row-editable .tr-sentence::before{content:"";float:right;width:62px;height:1px}
 #tr-root .tr-row-has-state .tr-sentence::before{width:92px}
 #tr-root .tr-row-actions{position:absolute;right:4px;top:-1px;z-index:2;display:flex;align-items:center;gap:1px}
 #tr-root .tr-row-actions>.tr-icon{position:static;width:28px;min-width:28px;min-height:28px;height:28px;padding:4px}
