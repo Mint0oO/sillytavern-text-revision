@@ -88,24 +88,15 @@ test('whole replacement preserves commas, spaces and newlines, including a singl
   assert.deepEqual(make('旧', '"轻轻, 缓缓", 低声').values, ['轻轻, 缓缓', '低声']);
 });
 
-test('legacy conditions remain intact and old literal/regex inputs retain their meaning on edit', async () => {
-  const legacy = validateRule({ id: 'old', find: '{A}极了', kind: 'pattern', captures: { A: { type: 'word' } }, values: ['很{A}'], action: 'replace', notBefore: ['不'], priority: 10, enabled: false });
-  const snapshot = structuredClone(legacy), draft = createRuleDraft(legacy);
-  assert.equal(isLegacyRule(legacy), true);
-  assert.deepEqual(simpleRule(draft, legacy), legacy);
-  assert.deepEqual(legacy, snapshot);
-  assert.match(renderRuleForm(draft), /readonly/);
-  for (const [kind, find] of [['word', 'a.b'], ['word', '{A}'], ['regex', '甲,乙']]) {
-    const old = validateRule({ id: 'original', kind, find, values: ['轻轻, 缓缓'], action: 'replace', enabled: false });
-    const saved = simpleRule(createRuleDraft(old), old);
-    assert.deepEqual(saved.values, ['轻轻, 缓缓']);
-    assert.equal(saved.enabled, false);
-    saved.enabled = true;
-    assert.equal((await revise(find, saved)).expected, '轻轻, 缓缓');
-    if (kind === 'word' && find === 'a.b') assert.equal((await revise('axb', saved)).expected, 'axb');
-  }
-  const dollar = validateRule({ kind: 'word', find: '旧', values: ['$&'], action: 'replace' });
-  assert.equal((await revise('旧', simpleRule(createRuleDraft(dollar), dollar))).expected, '$&');
+test('retired rules cannot be silently edited into a different regex', () => {
+  const old = { id: 'old', find: '{A}极了', kind: 'pattern', captures: { A: { type: 'word' } }, values: ['很{A}'] };
+  assert.equal(isLegacyRule(old), true);
+  assert.throws(() => createRuleDraft(old), /旧规则已停用/);
+  const current = validateRule({ kind: 'regex', find: '甲,乙', values: ['轻轻, 缓缓'], action: 'replace', enabled: false, priority: 10 });
+  const saved = simpleRule(createRuleDraft(current), current);
+  assert.equal(saved.enabled, false);
+  assert.equal(saved.priority, 10);
+  assert.deepEqual(saved.values, ['轻轻, 缓缓']);
 });
 
 test('bulk infers deletion or replacement per line and rejects invalid rows atomically', () => {
@@ -128,10 +119,9 @@ test('form has always-visible find/replacement without template or action settin
   assert.match(renderRuleForm(createRuleDraft(), { canDelete: true }), /data-action="delete-current-rule"/);
 });
 
-test('old whole-text replacements remain compatible but are read-only in the editor', () => {
+test('whole-text replacements remain editable as current regex rules', () => {
   const old = make('旧', ' $&, 保留 ', { wholeReplacement: true });
-  assert.equal(isLegacyRule(old), true);
+  assert.equal(isLegacyRule(old), false);
   const html = renderRuleForm(createRuleDraft(old));
-  assert.match(html, /兼容规则/);
-  assert.match(html, /readonly/);
+  assert.match(html, /data-rule-field="valuesText"/);
 });

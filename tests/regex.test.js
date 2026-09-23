@@ -23,7 +23,7 @@ test('regex respects scope, HTML, sentences, emoji offsets and explicit first-on
   const r = await scanPrepared(source, [rule('/死死地?/')], { scope: { extractTags: ['content'], excludeTags: ['think', 'status'] } });
   applySelected(r);
   assert.equal(r.expected, '<think>死死地</think><content>😀握住，死死盯住。<status>死死地</status>。</content>');
-  assert.equal((await scanPrepared('像猫。像狗一样。', [rule('/像.*一样/gs')])).groups[0].original, '像狗一样。');
+  assert.equal((await scanPrepared('像猫。像狗一样。', [rule('/像.*一样/gs')])).groups[0].original, '像猫。像狗一样。');
   assert.equal((await scanPrepared('像<em>猫</em>一样。', [rule('/像.*一样/gs')])).count, 0);
 });
 

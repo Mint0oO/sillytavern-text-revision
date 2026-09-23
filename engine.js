@@ -1,15 +1,11 @@
 // Pure text operations: no chat access, network requests, or DOM writes.
-import { analyzeWords, acceptsWord, CAPTURE_TYPES } from './language.js';
-import { sentenceSpans, revisionSpans } from './sentences.js';
+import { revisionSpans } from './sentences.js';
 import { parseRegexes, replacementParts } from './regex-support.js';
-export const ENGINE_VERSION = 8;
+export const ENGINE_VERSION = 9;
 export const DEFAULT_RULES = [
-  { id: 'very', find: '极其', kind: 'word', values: ['十分', '非常'], remove: true, action: 'delete', enabled: true },
-  { id: 'possess', find: '极具', kind: 'word', values: ['很有', '有'], remove: false, action: 'replace', enabled: true },
-  { id: 'extreme', find: '极度', kind: 'word', values: ['十分'], remove: true, action: 'delete', enabled: true },
-  { id: 'simile', find: '像{A}一样', kind: 'pattern', values: [], remove: true, action: 'delete', enabled: true, punctuation: 'following-comma', boundary: 'clause' },
-  { id: 'contrast', find: '不是{A}，而是{B}', kind: 'pattern', values: ['{B}', '并非{A}，只是{B}'], remove: false, action: 'replace', enabled: true },
-  { id: 'word-extreme', find: '{A}极了', kind: 'pattern', captures: { A: { type: 'word', words: [] } }, values: ['很{A}'], remove: false, action: 'replace', enabled: true, priority: 10, notBefore: ['不', '没', '没有', '很', '非常', '太', '更', '最'] },
+  { id: 'very', find: '极其', kind: 'regex', editorVersion: 1, values: [], remove: true, action: 'delete', enabled: true, execution: 'inherit' },
+  { id: 'possess', find: '极具', kind: 'regex', editorVersion: 1, values: ['很有', '有'], remove: false, action: 'replace', enabled: true, execution: 'inherit' },
+  { id: 'extreme', find: '极度', kind: 'regex', editorVersion: 1, values: [], remove: true, action: 'delete', enabled: true, execution: 'inherit' },
 ];
 export const LIMITS = { text: 200000, sentence: 8000, rules: 200, matches: 1000 };
 // Phones may access a LAN tavern over HTTP, where crypto.randomUUID is absent.
@@ -40,67 +36,24 @@ export function parseRuleValues(text) {
 }
 
 export function validateRule(rule) {
+  if (rule?.kind !== 'regex') throw new Error('旧版字词或占位模板规则已停用；请导出备份并改写为正则规则。');
   const find = String(rule.find ?? '').trim();
-  if (!find || find.length > (rule.kind === 'regex' ? 8000 : 256)) throw new Error('查找内容不能为空；正则最多 8000 字，旧模板最多 256 字。');
-  const kind = ['pattern', 'regex'].includes(rule.kind) ? rule.kind : 'word';
-  if (kind === 'regex') parseRegexes(find, rule.editorVersion === 1);
-  const keys = kind === 'pattern' ? find.match(/\{[A-Z]\}/g) ?? [] : [];
-  if (new Set(keys).size !== keys.length || find === keys[0] || keys.length > 4) throw new Error('句式需要固定文字，最多使用 4 个不重复的占位符（{A} 到 {Z}）。');
-  if (kind === 'pattern' && /\{[A-Z]\}\{[A-Z]\}/.test(find)) throw new Error('两个占位符之间需要固定文字。');
-  const captures = {};
-  for (const key of keys) {
-    const name = key[1], input = rule.captures?.[name] ?? {};
-    const type = Object.hasOwn(CAPTURE_TYPES, input.type) ? input.type : 'text';
-    const words = parseConditionWords(input.words);
-    if (type === 'list' && !words.length) throw new Error(`${name} 选择了“仅指定词语”，请填写允许词。`);
-    captures[name] = { type, words };
-  }
-  if (keys.filter(key => captures[key[1]].type === 'text').length > 2) throw new Error('任意文字占位符最多使用两个，其他占位符请设置词性或指定词语。');
-  if (kind === 'pattern' && /^\{[A-Z]\}/.test(find) && captures[find[1]].type === 'text') throw new Error('开头的占位符需要指定词性或词语，以免把主语一起替换。');
+  if (!find || find.length > 8000) throw new Error('查找内容不能为空；正则最多 8000 字。');
+  parseRegexes(find, rule.editorVersion === 1);
+  if (rule.captures && Object.keys(rule.captures).length || ['before', 'after', 'notBefore', 'exceptions'].some(key => rule[key]?.length) || rule.punctuation === 'following-comma' || rule.reviewAtEnd) throw new Error('旧版词性或上下文条件无法转换，请改写为正则。');
   const values = [...new Set((Array.isArray(rule.values) ? rule.values : []).map(String).map(s => rule.editorVersion === 1 && rule.replacementMode === 'text' ? s : s.trim()).filter(s => s.length))];
   if (values.length > 100 || values.some(s => s.length > 1000)) throw new Error('每条规则最多 100 个候选，每个候选最多 1000 字。');
-  if (kind === 'regex') values.forEach(replacementParts);
-  if (kind === 'pattern' && values.some(v => (v.match(/\{[A-Z]\}/g) ?? []).some(k => !keys.includes(k)))) throw new Error('替换候选使用了识别句式中不存在的占位符。');
+  values.forEach(replacementParts);
   const remove = Boolean(rule.remove);
   const action = ['delete', 'replace', 'review'].includes(rule.action) ? rule.action : remove ? 'delete' : values.length ? 'replace' : 'review';
   if (action === 'delete' && !remove) throw new Error('默认删除需要先开启“允许删除”。');
   if (action === 'replace' && !values.length) throw new Error('默认替换需要至少一个替换候选。');
   const priority = Number(rule.priority ?? 0);
   if (!Number.isInteger(priority) || priority < 0 || priority > 100) throw new Error('优先级需要是 0–100 的整数，数字越大越优先。');
-  return { id: String(rule.id || newId()), find, kind, values, remove, action, enabled: rule.enabled !== false, captures,
-    ...(rule.editorVersion === 1 && kind === 'regex' ? { editorVersion: 1, replacementMode: rule.replacementMode === 'text' ? 'text' : 'candidates' } : {}),
-    category: ['word', 'sentence'].includes(rule.category) ? rule.category : kind === 'pattern' ? 'sentence' : 'word',
+  return { id: String(rule.id || newId()), find, kind: 'regex', values, remove, action, enabled: rule.enabled !== false,
+    editorVersion: 1, replacementMode: rule.replacementMode === 'text' ? 'text' : 'candidates',
     execution: rule.editorVersion === 1 && rule.execution === 'inherit' ? 'inherit' : rule.execution === 'auto' && action !== 'review' ? 'auto' : 'review',
-    punctuation: rule.punctuation === 'following-comma' ? rule.punctuation : 'none',
-    boundary: rule.boundary === 'clause' ? 'clause' : 'sentence', priority,
-    before: parseConditionWords(rule.before), after: parseConditionWords(rule.after), notBefore: parseConditionWords(rule.notBefore), exceptions: parseConditionWords(rule.exceptions),
-    reviewAtEnd: rule.reviewAtEnd === undefined ? kind === 'pattern' && find === '像{A}一样' : Boolean(rule.reviewAtEnd) };
-}
-
-export function parseConditionWords(value = []) {
-  const words = [...new Set((Array.isArray(value) ? value : String(value).split(/[\n,，]/)).map(String).map(s => s.trim()).filter(Boolean))];
-  if (words.length > 100 || words.some(w => w.length > 100)) throw new Error('条件词最多 100 个，每个最多 100 字。');
-  return words;
-}
-export const needsLanguage = rules => rules.some(r => r.enabled !== false && r.kind === 'pattern' && Object.values(r.captures ?? {}).some(c => !['text', 'list'].includes(c.type) && c.type));
-
-function compile(rule, tokens) {
-  const keys = [];
-  const bits = rule.kind === 'pattern' ? rule.find.split(/(\{[A-Z]\})/g) : [rule.find];
-  const regex = new RegExp(bits.map((part, i) => {
-    if (rule.kind !== 'pattern' || !/^\{[A-Z]\}$/.test(part)) return escapeRE(part);
-    keys.push(part);
-    const condition = rule.captures[part[1]];
-    if (condition.type !== 'text') {
-      const words = condition.type === 'list' ? condition.words : tokens.filter(t => acceptsWord(t, condition)).map(t => t.word);
-      const alternatives = [...new Set(words)].sort((a, b) => b.length - a.length).map(escapeRE);
-      return alternatives.length ? `(${alternatives.join('|')})` : '((?!))';
-    }
-    // Bounded captures cannot cross a sentence or line. No user-supplied regex executes.
-    const chars = rule.boundary === 'clause' ? '[^，,。！？!?；;\n]' : '[^。！？!?；;\n]';
-    return `(${chars}{1,200}${i === bits.length - 2 && bits.at(-1) === '' ? '' : '?'})`;
-  }).join(''), 'gd');
-  return { regex, keys };
+    priority };
 }
 
 export const DEFAULT_EXCLUDE_TAGS = ['think', 'thinking'];
@@ -304,7 +257,7 @@ function resolveOverlaps(found, sentence, random) {
   return resolved.sort((a, b) => a.start - b.start || b.end - a.end);
 }
 
-export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now(), scope, analyze = analyzeWords, regexMatches } = {}) {
+export function scan(text, rules, { random = Math.random, id = newId(), time = Date.now(), scope, regexMatches } = {}) {
   if (typeof text !== 'string' || text.length > LIMITS.text) throw new Error('单条回复超过 20 万字，暂不检测。');
   if (rules.length > LIMITS.rules) throw new Error('最多启用 200 条规则。');
   const compiled = rules.map(validateRule).filter(r => r.enabled);
@@ -319,49 +272,18 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
   for (const sentence of revisionSpans(text, rangeStart, rangeEnd, regexSpans)) {
     if (sentence.text.length > LIMITS.sentence) throw new Error('单个修订片段超过 8000 字，请缩小匹配范围或先分段。');
     let found = [];
-    let tokens;
     for (const rule of compiled) {
-      if (rule.kind === 'regex' && !regexMatches) throw new Error('正则规则需要使用独立检测任务。');
-      const literals = rule.kind === 'regex' ? [] : rule.kind === 'pattern' ? rule.find.split(/\{[A-Z]\}/).filter(Boolean) : [rule.find];
-      if (!literals.every(s => sentence.text.includes(s))) continue;
-      const linguistic = needsLanguage([rule]);
-      if (linguistic) tokens ??= analyze(sentence.text);
-      const { regex, keys } = rule.kind === 'regex' ? { keys: [] } : compile(rule, tokens ?? []);
-      const occurrences = rule.kind === 'regex'
-        ? (absoluteRegex[rule.id] ?? []).filter(m => m.index >= sentence.index && m.index + m.text.length <= sentence.index + sentence.text.length).map(m => Object.assign([m.text], m, { index: m.index - sentence.index }))
-        : [...sentenceSpans(sentence.text)].flatMap(span => [...span.text.matchAll(regex)].map(m => {
-          m.index += span.index;
-          m.indices = m.indices.map(pair => pair?.map(at => at + span.index));
-          m.contextStart = sentence.index + span.index; m.contextEnd = m.contextStart + span.text.length;
-          return m;
-        }));
+      if (!regexMatches) throw new Error('正则规则需要使用独立检测任务。');
+      const occurrences = (absoluteRegex[rule.id] ?? []).filter(m => m.index >= sentence.index && m.index + m.text.length <= sentence.index + sentence.text.length).map(m => Object.assign([m.text], m, { index: m.index - sentence.index }));
       for (const m of occurrences) {
-        if (linguistic && (!tokens.some(t => t.start === m.index) || !tokens.some(t => t.end === m.index + m[0].length))) continue;
-        if (keys.some((key, i) => {
-          const condition = rule.captures[key[1]], [start, end] = m.indices[i + 1];
-          return !['text', 'list'].includes(condition.type) && !tokens.some(t => t.start === start && t.end === end && acceptsWord(t, condition));
-        })) continue;
-        const prefix = text.slice(m.contextStart ?? sentence.index, sentence.index + m.index), suffix = text.slice(sentence.index + m.index + m[0].length, m.contextEnd ?? sentence.index + sentence.text.length);
-        if (rule.before.length && !rule.before.some(w => prefix.endsWith(w)) || rule.after.length && !rule.after.some(w => suffix.startsWith(w))) continue;
-        if (rule.notBefore.some(w => prefix.endsWith(w))) continue;
-        // Only exceptions intersecting this occurrence suppress it, not the whole sentence.
-        if (rule.exceptions.some(w => {
-          let at = sentence.text.indexOf(w, Math.max(0, m.index - w.length + 1));
-          return at >= 0 && at < m.index + m[0].length;
-        })) continue;
         const values = m.options ?? rule.values;
         const choice = rule.action === 'delete' ? '' : rule.action === 'replace' ? values[Math.min(values.length - 1, Math.floor(random() * values.length))] : null;
-        if (rule.kind === 'regex' && choice === m[0]) continue;
-        const generic = rule.kind === 'pattern' && rule.find === '像{A}一样';
-        const atEnd = rule.reviewAtEnd && /^[\s，,。.!！？?；;…"'”’」』）)\]］】〕〉》]*$/u.test(suffix);
-        const trailing = rule.remove && rule.punctuation === 'following-comma' ? suffix.match(/^[ \t]*[，,][ \t]*/)?.[0] ?? '' : '';
+        if (choice === m[0]) continue;
         const coreEnd = m.index + m[0].length;
-        found.push({ start: m.index, end: coreEnd + trailing.length, coreEnd, old: m[0] + trailing, trailing, reviewAtEnd: rule.reviewAtEnd, priority: rule.priority, ruleId: rule.id, ruleFind: rule.find, action: rule.action, execution: rule.execution, resolved: rule.kind === 'regex', captures: m.captures ?? Object.fromEntries(keys.map((k, i) => [k, m[i + 1]])), options: values, remove: rule.remove, value: atEnd && choice === '' ? null : choice, generic, reason: atEnd && choice === '' ? '句式删除后可能不完整，请手动修改。' : '', done: false });
+        found.push({ start: m.index, end: coreEnd, coreEnd, old: m[0], trailing: '', reviewAtEnd: false, priority: rule.priority, ruleId: rule.id, ruleFind: rule.find, action: rule.action, execution: rule.execution, resolved: true, captures: m.captures ?? {}, options: values, remove: rule.remove, value: choice, generic: false, reason: '', done: false });
         if (found.length > LIMITS.matches) throw new Error('匹配过多，请缩小规则范围后重试。');
       }
     }
-    // A specific template wins over the generic template covering the same span.
-    found = found.filter(m => !m.generic || !found.some(n => !n.generic && n.priority >= m.priority && n.start === m.start && n.end === m.end));
     const matches = resolveOverlaps(found, sentence.text, random);
     if (!matches.length) continue;
     matches.forEach((m, i) => { m.id = i; });
@@ -385,8 +307,9 @@ export function applySelected(round, { automatic = false } = {}) {
   const eligible = g => !g.kept && !g.manual && g.matches.some(m => !m.done && m.execution === 'auto' && replacement(m) !== null && replacement(m) !== m.old);
   const groups = round.groups.filter(g => automatic ? eligible(g) : g.selected && ready(g));
   if (!groups.length) return 0;
-  round.undo = { text: round.expected, groups: structuredClone(round.groups), reviewed: round.reviewed, log: structuredClone(round.log ?? []) };
+  round.undo = { text: round.expected, groups: structuredClone(round.groups), reviewed: round.reviewed };
   round.log ??= [];
+  const operationId = newId(), time = Date.now();
   for (const group of groups) {
     const before = group.applied ?? group.original;
     const changes = group.matches.filter(m => automatic ? !m.done && m.execution === 'auto' && replacement(m) !== null : replacement(m) !== null && replacement(m) !== (m.appliedValue ?? m.old));
@@ -394,8 +317,8 @@ export function applySelected(round, { automatic = false } = {}) {
       // Keep original offsets and pending proposals; apply only automatic occurrences.
       group.applied = proposal({ ...group, matches: group.matches.map(m => m.done || changes.includes(m) ? m : { ...m, value: null }) });
     } else group.applied = proposal(group);
-    if (group.manual) round.log.push({ before, after: group.applied, rule: '手动编辑整句', automatic: false });
-    else for (const m of changes) if (replacement(m) !== (m.appliedValue ?? m.old)) round.log.push({ before: m.appliedValue ?? m.old, after: replacement(m), rule: m.ruleFind ?? m.ruleId, automatic });
+    if (group.manual) round.log.push({ before, after: group.applied, rule: '手动编辑整句', automatic: false, operationId, time });
+    else for (const m of changes) if (replacement(m) !== (m.appliedValue ?? m.old)) round.log.push({ before: m.appliedValue ?? m.old, after: replacement(m), rule: m.ruleFind ?? m.ruleId, automatic, operationId, time });
     group.selected = false;
     for (const m of group.matches) if (group.manual || changes.includes(m)) { m.done = true; m.appliedValue = replacement(m); }
     if (automatic) group.selected = ready(group);

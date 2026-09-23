@@ -89,14 +89,14 @@ export function renderRulesView(all, f, execution = 'review', deletion = {}, set
       : `<label class="tr-select"><input type="checkbox" data-rule-enabled="${esc(r.id)}" aria-label="启用规则：${esc(r.find)}" ${r.enabled !== false ? 'checked' : ''}></label>`;
     return `<section class="tr-rule-section ${selected ? 'tr-rule-delete-selected' : ''}"><div class="tr-rule-row">${button(`<span class="tr-rule-find" title="${esc(r.find)}">${esc(visibleFind)}</span><span class="tr-meta">${deleteMode ? (selected ? '已选择' : '选择') : `${action} ›`}</span>`, rowAction)}${rowControl}</div></section>`;
   };
-  const current = rules.filter(r => !isLegacyRule(r)), legacy = rules.filter(isLegacyRule);
+  const unsupported = rules.filter(isLegacyRule);
   const executionStatus = `<div class="tr-execution-status"><span>${ruleExecutionStatus(execution, settings)}</span><span class="tr-execution-hint" aria-hidden="true">可前往设置修改</span></div>`;
   const ruleTools = deleteMode
     ? ''
-    : `${button('删除', `data-action="begin-rule-delete" ${all.length ? '' : 'disabled'}`)}${button('新增', 'data-action="new-rule"')}${hostIcon('file-import', '导入 JSON 规则集', 'import-rules')}${hostIcon('file-export', '导出 JSON 规则集', 'export-rules')}`;
+    : `${button('删除', `data-action="begin-rule-delete" ${all.length ? '' : 'disabled'}`)}${button('新增', 'data-action="new-rule"')}${hostIcon('file-import', '导入 JSON 规则集', 'import-rules')}${unsupported.length ? button('备份旧规则', 'data-action="export-rules-raw"') : hostIcon('file-export', '导出 JSON 规则集', 'export-rules')}`;
   return `<div class="tr-bar ${deleteMode ? 'tr-rule-delete-bar' : ''}"><div class="tr-rule-search"><input data-rule-filter="search" aria-label="搜索规则" placeholder="搜索" value="${esc(f.search)}">${button('×', `class="tr-search-clear" data-action="clear-rule-search" aria-label="清空搜索" title="清空搜索" ${f.search ? '' : 'disabled'}`)}</div><div class="tr-rule-tools">${ruleTools}</div></div>${executionStatus}<input id="tr-rule-import-file" type="file" accept=".json,application/json" hidden>
-    ${current.map(row).join('')}
-    ${legacy.length ? `<details class="tr-legacy-rules" ${f.search ? 'open' : ''}><summary>兼容规则 · ${legacy.length}</summary>${legacy.map(row).join('')}</details>` : ''}
+    ${unsupported.length ? `<p class="tr-meta">检测到 ${unsupported.length} 条旧规则，当前引擎不再执行。请先备份规则，再删除或改写为正则。</p>` : ''}
+    ${rules.map(row).join('')}
     ${!rules.length ? '<p class="tr-meta">没有符合搜索的规则。</p>' : ''}
     `;
 }

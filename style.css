@@ -128,7 +128,7 @@
 #tr-root .tr-rows>.tr-row:last-child{margin-bottom:0}
 #tr-root .tr-row-toggle,#tr-root .tr-row-text{display:block;width:100%;padding:5px 8px;text-align:left;border-radius:0;min-height:38px;color:var(--tr-ink)}
 #tr-root .tr-row-toggle .tr-sentence{display:block}
-#tr-root .tr-row-editable .tr-sentence::before{content:"";float:right;width:62px;height:24px}
+#tr-root .tr-row-editable .tr-sentence::before{content:"";float:right;width:62px;height:1lh}
 #tr-root .tr-row-has-state .tr-sentence::before{width:92px}
 #tr-root .tr-row-actions{position:absolute;right:4px;top:-1px;z-index:2;display:flex;align-items:center;gap:1px}
 #tr-root .tr-row-actions>.tr-icon{position:static;width:28px;min-width:28px;min-height:28px;height:28px;padding:4px}
@@ -140,6 +140,8 @@
 #tr-root .tr-row-toggle:hover:not(:disabled){background:color-mix(in srgb,var(--tr-soft) 40%,transparent)}
 #tr-root .tr-selected{background:color-mix(in srgb,var(--tr-soft) 58%,var(--tr-surface));box-shadow:inset 2px 0 color-mix(in srgb,var(--tr-muted) 58%,transparent),0 5px 10px -9px color-mix(in srgb,var(--tr-ink) 55%,transparent)}
 #tr-root .tr-row-toggle:focus-visible{outline:2px solid var(--tr-muted);outline-offset:-2px}
+#tr-root .tr-save-pending{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;padding:8px;color:var(--tr-danger,#b65b5b);background:var(--tr-soft);font-size:13px}
+#tr-root .tr-save-pending details{width:100%}
 #tr-root .tr-row-editing{padding:0 0 2px}
 #tr-root .tr-edit-preview{padding-right:46px;background:color-mix(in srgb,var(--tr-soft) 24%,transparent)}
 #tr-root .tr-inline-editor{margin:2px 8px 8px 20px;padding:10px;border:1px solid var(--tr-border);border-radius:8px;background:var(--tr-surface);box-shadow:0 4px 14px #00000012}

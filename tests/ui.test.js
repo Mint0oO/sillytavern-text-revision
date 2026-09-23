@@ -133,7 +133,8 @@ test('compact logs group changed text, escape markup and preserve the stored ori
   assert.match(html, /<del>极具<\/del> → <ins>很有<\/ins>/);
   assert.match(html, /<del>😀<\/del> → <ins>😁<\/ins>/);
   assert.match(html, /&lt;x&gt;/);
-  assert.doesNotMatch(html, /very-long-regex|another-regex|他|她|原样|手动|自动/);
+  assert.match(html, /very-long-regex|another-regex/);
+  assert.doesNotMatch(html, /<p class="tr-sentence">他|<p class="tr-sentence">她|原样/);
   assert.equal(JSON.stringify(log), original);
   assert.equal(renderChangeLog([]), '');
 });
@@ -150,7 +151,7 @@ test('the panel reads its own round instead of a background-selected round and c
   assert.equal(ui.panelRoundId, null);
   assert.equal(ui.panelTarget, null);
   assert.equal(ui.detecting, false);
-  assert.equal(ui.drafts.size, 0);
+  assert.equal(ui.drafts.size, 1, 'closing keeps the unfinished draft');
   assert.equal(ui.c.detectionSequence, 3, 'closing the panel must not cancel background detection');
   assert.equal(ui.panelDetection.signal.aborted, true);
 });
@@ -170,20 +171,20 @@ test('review statistics show the host floor id and never borrow the controller c
   assert.doesNotMatch(html, /99处/);
 });
 
-test('editable rows expose one-line pencil actions and an adjacent keep/delete menu', () => {
+test('editable rows expose one-line pencil actions and an adjacent restore/delete menu', () => {
   const ui = Object.assign(Object.create(RevisionUI.prototype), { edit: null, panelRound: () => ({ id: 'round' }) });
   const group = { id: 0, original: '原句', matches: [{ id: 1, old: '原', value: '新', options: [], done: false }], selected: true, kept: false, manual: false };
   const html = ui.row(group, true);
   assert.match(html, /class="tr-row-actions"/);
   assert.match(html, /data-edit="0"/);
   assert.match(html, /data-quick-toggle="0"/);
-  assert.match(html, /data-quick="keep"/);
-  assert.match(html, />保留<\/button>/);
+  assert.match(html, /data-quick="restore"/);
+  assert.match(html, />恢复<\/button>/);
   assert.match(html, /data-quick="delete"/);
   assert.match(html, />删除<\/button>/);
 });
 
-test('quick keep and delete actions update the pending group and persist the draft', async () => {
+test('quick restore and delete actions update the pending group and persist the draft', async () => {
   const group = id => ({ id, original: '原句', matches: [{ id: 1, old: '原', value: '新', options: [], done: false }], selected: true, kept: false, manual: false });
   const round = { id: 'round', groups: [group(0), group(1)] };
   const saved = [];
@@ -191,7 +192,7 @@ test('quick keep and delete actions update the pending group and persist the dra
     edit: null, panelRound: () => round, badge() {}, refreshReviewRows(r, ids) { saved.push(['refresh', r, ids]); },
     c: { target() {}, assertIdle() {}, editable() { return true; }, async persistDraft() { saved.push(['persist']); } },
   });
-  await ui.click({ target: { closest: () => ({ type: 'button', dataset: { quick: 'keep', quickGroup: '0' } }) } });
+  await ui.click({ target: { closest: () => ({ type: 'button', dataset: { quick: 'restore', quickGroup: '0' } }) } });
   assert.equal(round.groups[0].kept, true);
   assert.equal(round.groups[0].selected, false);
   await ui.click({ target: { closest: () => ({ type: 'button', dataset: { quick: 'delete', quickGroup: '1' } }) } });

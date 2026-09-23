@@ -60,7 +60,7 @@ test('a rejected detection save keeps suggestions, reports the error and release
   assert.equal(f.ctl.busy, false);
   assert.equal(f.ui.detecting, false);
   assert.match(f.ui.html, /1处问题/);
-  assert.equal(f.ui.status, '模拟保存失败');
+  assert.match(f.ui.status, /检测记录尚未可靠保存：模拟保存失败/);
 });
 
 test('closing and reopening during storage cannot rebind the old panel session', async () => {

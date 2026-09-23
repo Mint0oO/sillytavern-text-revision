@@ -1,55 +1,49 @@
-import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, ENGINE_VERSION, needsLanguage, applySelected, ready, newId, normalizeScope, scopeKey } from './engine.js';
-import { ensureLanguage } from './language.js';
+import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, ENGINE_VERSION, applySelected, rebuild, ready, newId, normalizeScope, scopeKey } from './engine.js';
 import { scanPrepared } from './scanner.js';
-import { createRuleDraft, simpleRule } from './rule-editor.js';
+import { HISTORY_FORMAT_VERSION, compactRound, boundHistory, migrateRounds, upsertRound, restoreBase, restoreUndoGroups, textKey } from './history-store.js';
 
 export const KEY = 'text_revision';
 export const clone = value => structuredClone(value);
 export const chatKey = c => JSON.stringify([c.groupId ?? null, c.characterId ?? null, c.chatId ?? c.getCurrentChatId?.()]);
 export const swipeId = m => m.swipe_id ?? 0;
 export const isReply = m => m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim();
-const rulesKey = settings => JSON.stringify([settings.enabled !== false, settings.ruleExecution ?? 'review', settings.rules]);
+const rulesKey = settings => {
+  const input = JSON.stringify([settings.enabled !== false, settings.ruleExecution ?? 'review', settings.rules]);
+  let hash = 0xcbf29ce484222325n;
+  for (let i = 0; i < input.length; i++) hash = BigInt.asUintN(64, (hash ^ BigInt(input.charCodeAt(i))) * 0x100000001b3n);
+  return `${input.length}:${hash.toString(16)}`;
+};
 export class DetectionCancelledError extends Error {
   constructor() { super('检测任务已取消。'); this.name = 'DetectionCancelledError'; }
 }
 export const isDetectionCancelled = error => error?.name === 'DetectionCancelledError';
+export class SaveConflictError extends Error {
+  constructor(status, message) { super(message); this.name = 'SaveConflictError'; this.status = status; }
+}
 
 export class RevisionController {
-  constructor(getContext, verifySave, prepareLanguage = ensureLanguage) {
+  constructor(getContext, verifySave) {
     this.context = getContext;
     this.verifySave = verifySave;
     this.busy = false;
     this.onChange = () => {};
     this.selectedId = null;
-    this.prepareLanguage = prepareLanguage;
     this.detectionSequence = 0;
     this.detectionTasks = new WeakMap();
     this.writeTail = Promise.resolve();
+    this.pendingSave = this.loadPendingState();
+    this.runtimeRounds = new Map();
+    this.recordSaveError = null;
   }
   settings() {
     const c = this.context();
     c.extensionSettings[KEY] ??= {};
     const s = c.extensionSettings[KEY];
     if (s.rules == null) {
-      s.rules = DEFAULT_RULES.filter(rule => rule.kind === 'word').map(rule => simpleRule(createRuleDraft(rule), rule));
-      s.ruleDefaultsVersion = 2;
-    }
-    if (!s.ruleDefaultsVersion) {
-      s.rules = s.rules.filter(r => !(r.kind === 'pattern' && r.find === '像{A}的孤狼一样'));
-      s.ruleDefaultsVersion = 1;
-    }
-    if (s.ruleDefaultsVersion < 2) {
-      // Upgrade only recognizable built-ins; keep user-written rules and disabled states.
-      const simile = s.rules.find(r => r.id === 'simile' && r.kind === 'pattern' && r.find === '像{A}一样' && r.remove && r.action === 'delete' && !r.values?.length);
-      if (simile) { simile.punctuation ??= 'following-comma'; simile.boundary ??= 'clause'; }
-      if (s.rules.some(r => ['very', 'simile', 'extreme', 'contrast'].includes(r.id)) && !s.rules.some(r => r.find === '{A}极了')) {
-        s.rules.push(clone(DEFAULT_RULES.find(r => r.id === 'word-extreme')));
-      }
-      s.ruleDefaultsVersion = 2;
+      s.rules = clone(DEFAULT_RULES);
     }
     s.theme ??= 'light';
     s.appearance ??= 'minimal';
-    s.appearanceEnabled ??= true;
     s.enabled ??= true;
     s.palette ??= 'soft';
     s.transparency = Math.max(0, Math.min(100, Number(s.transparency) || 0));
@@ -75,7 +69,62 @@ export class RevisionController {
     }
     return s;
   }
-  history() { return this.context().chatMetadata?.[KEY]?.rounds ?? []; }
+  history() {
+    const metadata = this.context().chatMetadata?.[KEY];
+    if (!metadata) return [];
+    if (metadata.formatVersion !== HISTORY_FORMAT_VERSION) {
+      const legacy = metadata.rounds ?? [];
+      metadata.legacyBackup ??= clone(legacy);
+      metadata.rounds = migrateRounds(legacy);
+      metadata.formatVersion = HISTORY_FORMAT_VERSION;
+    }
+    return (metadata.rounds ?? []).map(record => {
+      const runtime = this.runtimeRounds.get(record.id);
+      if (record.logOnly) return record;
+      if (runtime && (textKey(runtime.expected) !== record.expectedKey || runtime.reviewed !== record.reviewed || (runtime.log?.length ?? 0) !== (record.log?.length ?? 0))) {
+        this.runtimeRounds.delete(record.id);
+      }
+      if (this.runtimeRounds.has(record.id)) return runtime;
+      const matches = this.context().chat.filter(message => message?.extra?.[KEY]?.id === record.messageUid);
+      const message = matches.length === 1 ? matches[0] : null;
+      const marker = message?.swipe_info?.[record.swipeId]?.gen_started ?? message?.swipe_info?.[record.swipeId]?.send_date ?? null;
+      if (!message || swipeId(message) !== record.swipeId || JSON.stringify([record.swipeId, marker]) !== record.versionKey || textKey(message.mes) !== record.expectedKey) return record;
+      const base = restoreBase(message.mes, record.groups, record.baseKey);
+      if (base === null) return record;
+      const hydrated = { ...record, base, expected: message.mes };
+      if (hydrated.undo) {
+        const groups = hydrated.undo.groups ?? restoreUndoGroups(hydrated.groups, hydrated.undo.patches);
+        if (!groups) return record;
+        hydrated.undo = { ...hydrated.undo, groups, text: rebuild({ base, groups }) };
+      }
+      this.runtimeRounds.set(record.id, hydrated);
+      return hydrated;
+    });
+  }
+  syncRound(round, touched = false) {
+    const metadata = this.context().chatMetadata?.[KEY];
+    if (!metadata?.rounds?.some(item => item.id === round.id)) return;
+    if (touched) round.touchedAt = Date.now();
+    metadata.rounds = boundHistory(metadata.rounds.map(item => item.id === round.id ? compactRound(round) : item));
+    this.runtimeRounds.set(round.id, round);
+    for (const item of metadata.rounds) if (item.logOnly) this.runtimeRounds.delete(item.id);
+  }
+  loadPendingState() {
+    try {
+      const value = JSON.parse(sessionStorage.getItem('henge-pending-save-v1') || 'null');
+      return value?.chatKey && typeof value.text === 'string' ? value : null;
+    } catch { return null; }
+  }
+  savePendingState() {
+    try {
+      if (!this.pendingSave) sessionStorage.removeItem('henge-pending-save-v1');
+      else {
+        const { chatKey, text, before, status, round } = this.pendingSave;
+        const identity = round ? { id: round.id, messageUid: round.messageUid, messageId: round.messageId, swipeId: round.swipeId, reviewed: round.reviewed } : this.pendingSave.identity;
+        sessionStorage.setItem('henge-pending-save-v1', JSON.stringify({ chatKey, text, before, status, identity }));
+      }
+    } catch { /* In-memory guard still protects the active page. */ }
+  }
   current() { return this.history().find(r => r.id === this.selectedId) ?? this.history().at(-1); }
   latestReply() { return this.context().chat.findLastIndex(isReply); }
   captureTarget(messageId) {
@@ -122,6 +171,7 @@ export class RevisionController {
   }
   assertIdle() {
     if (this.busy) throw new Error('正在保存，请稍候。');
+    if (this.pendingSave) throw new Error('上一笔保存尚未确认，请返回对应聊天并重新确认保存状态。');
   }
   target(round, expected = round?.expected) {
     const c = this.context();
@@ -134,7 +184,7 @@ export class RevisionController {
     return m;
   }
   editable(round) {
-    try { this.target(round); return this.settings().enabled !== false && round.engineVersion === ENGINE_VERSION && round.rulesKey === rulesKey(this.settings()) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r !== round && r.number > round.number && r.messageUid === round.messageUid && r.swipeId === round.swipeId); }
+    try { this.target(round); return !round.logOnly && this.history().some(r => r.id === round.id) && this.settings().enabled !== false && round.engineVersion === ENGINE_VERSION && round.rulesKey === rulesKey(this.settings()) && round.scope !== undefined && scopeKey(round.scope) === scopeKey(this.settings()) && !this.history().some(r => r.id !== round.id && r.number > round.number && r.messageUid === round.messageUid && r.versionKey === round.versionKey); }
     catch { return false; }
   }
   async detect(messageId = this.latestReply(), { auto = false, persist = true, signal, onReady = () => {} } = {}) {
@@ -157,8 +207,6 @@ export class RevisionController {
       if (this.selectedId !== previous.id) { this.selectedId = previous.id; this.onChange(); }
       return null;
     }
-    if (needsLanguage(rules)) await this.prepareLanguage();
-    checkCancelled();
     const round = await scanPrepared(snapshot.text, rules, { scope, context: c, executionDefault: settings.ruleExecution });
     checkCancelled();
     const now = this.context();
@@ -171,11 +219,17 @@ export class RevisionController {
     if (this.busy) throw new DetectionCancelledError();
     currentMessage.extra ??= {};
     currentMessage.extra[KEY] ??= { id: newId() };
-    Object.assign(round, { rulesKey: snapshot.rules, chatKey: chatKey(now), messageId: currentMessageId, messageUid: currentMessage.extra[KEY].id, swipeId: swipeId(currentMessage), number: (now.chatMetadata[KEY]?.total ?? 0) + 1 });
-    const rounds = [...this.history(), round];
-    // Keep the complete latest round and bounded historical snapshots per chat.
-    while (rounds.length > 30 || rounds.length > 1 && JSON.stringify(rounds).length > 4000000) rounds.shift();
-    now.chatMetadata[KEY] = { total: round.number, rounds };
+    const prior = this.history(), uid = currentMessage.extra[KEY].id;
+    const marker = currentMessage.swipe_info?.[snapshot.swipe]?.gen_started ?? currentMessage.swipe_info?.[snapshot.swipe]?.send_date ?? null;
+    const versionKey = JSON.stringify([snapshot.swipe, marker]);
+    const priorVersion = prior.findLast(item => item.messageUid === uid && item.versionKey === versionKey);
+    round.log = clone(priorVersion?.log ?? []);
+    Object.assign(round, { rulesKey: snapshot.rules, chatKey: chatKey(now), messageId: currentMessageId, messageUid: uid, swipeId: swipeId(currentMessage), versionKey, version: priorVersion?.version ?? 1 + Math.max(0, ...prior.filter(item => item.messageUid === uid).map(item => item.version ?? 1)), number: (now.chatMetadata[KEY]?.total ?? 0) + 1 });
+    const stored = upsertRound(now.chatMetadata[KEY]?.rounds ?? [], round);
+    now.chatMetadata[KEY] = { ...now.chatMetadata[KEY], formatVersion: HISTORY_FORMAT_VERSION, total: round.number, rounds: stored };
+    this.runtimeRounds.set(round.id, round);
+    const retained = new Set(stored.filter(item => !item.logOnly).map(item => item.id));
+    for (const id of this.runtimeRounds.keys()) if (!retained.has(id)) this.runtimeRounds.delete(id);
     this.selectedId = round.id;
     // Record persistence never locks reading, selection or draft editing.
     onReady(round);
@@ -192,7 +246,53 @@ export class RevisionController {
     this.writeTail = next.catch(() => {});
     return next;
   }
-  async persistDraft() { await this.enqueueWrite(() => this.context().saveChat()); }
+  async persistDraft() {
+    if (this.pendingSave) throw new Error('上一笔保存尚未确认，暂不保存记录以免覆盖服务器正文。');
+    for (const round of this.runtimeRounds.values()) this.syncRound(round);
+    try {
+      const key = chatKey(this.context());
+      await this.enqueueWrite(async () => {
+        const c = this.context(), latest = this.history().at(-1);
+        await c.saveChat();
+        if (chatKey(this.context()) !== key) throw new DetectionCancelledError();
+        if (latest) await this.verifySave(c, latest, latest.expected, undefined, true);
+      }, key);
+      this.recordSaveError = null;
+    } catch (error) {
+      if (isDetectionCancelled(error)) throw error;
+      this.recordSaveError = error.message;
+      this.onChange({ type: 'record-save-failed' });
+      throw new Error(`检测记录尚未可靠保存：${error.message}`);
+    }
+  }
+  async confirmPendingSave() {
+    const pending = this.pendingSave;
+    if (!pending || pending.chatKey !== chatKey(this.context())) throw new Error('当前聊天没有待确认的保存。');
+    pending.round ??= this.history().find(item => item.id === pending.identity?.id) ?? { chatKey: pending.chatKey, ...pending.identity };
+    try {
+      await this.verifySave(this.context(), pending.round, pending.text, pending.before);
+      this.pendingSave = null;
+      this.savePendingState();
+      this.onChange();
+      return 'saved';
+    } catch (error) {
+      if (error instanceof SaveConflictError && error.status === 'old') {
+        pending.restore?.();
+        this.syncRound(pending.round);
+        this.pendingSave = null;
+        this.savePendingState();
+        this.onChange();
+        return 'old';
+      }
+      if (error instanceof SaveConflictError && error.status === 'diverged') {
+        pending.status = 'diverged';
+        this.savePendingState();
+        this.onChange();
+        throw new Error('服务器正文与本地修改均不同。请复制当前建议并在酒馆中核对，插件不会继续覆盖。');
+      }
+      throw new Error(`仍无法确认服务器状态：${error.message}`);
+    }
+  }
   async finishReview(round) {
     this.assertIdle();
     this.target(round);
@@ -205,10 +305,12 @@ export class RevisionController {
       if (!this.editable(round)) throw new Error('这轮结果已过期，请重新检测。');
       round.reviewed = true; round.groups.forEach(g => { g.selected = false; });
       marked = true;
+      this.syncRound(round, true);
       await c.saveChat(); await this.verifySave(c, round, round.expected);
     }, round.chatKey); }
     catch (error) {
-      if (marked) { round.reviewed = previous; round.groups.forEach((g, i) => { g.selected = selections[i]; }); }
+      if (marked && error instanceof SaveConflictError && error.status === 'old') { round.reviewed = previous; round.groups.forEach((g, i) => { g.selected = selections[i]; }); this.syncRound(round); }
+      else if (marked) { this.pendingSave = { chatKey: round.chatKey, round, text: round.expected, status: 'unconfirmed', restore: () => { round.reviewed = previous; round.groups.forEach((g, i) => { g.selected = selections[i]; }); } }; this.savePendingState(); }
       if (isDetectionCancelled(error)) throw error;
       throw new Error(`未能确认审阅状态已保存。${error.message}`);
     }
@@ -224,10 +326,16 @@ export class RevisionController {
     let changed;
     if (undo) {
       if (!copy.undo) throw new Error('没有可以撤销的修改。');
+      const operationId = newId(), time = Date.now();
+      const reversals = copy.groups.flatMap((group, index) => {
+        const previous = copy.undo.groups[index];
+        const before = group.applied ?? group.original, after = previous?.applied ?? previous?.original;
+        return before === after ? [] : [{ before, after, rule: '撤销上次应用', automatic: false, operationId, time }];
+      });
       copy.expected = copy.undo.text;
       copy.groups = copy.undo.groups;
       copy.reviewed = copy.undo.reviewed;
-      copy.log = copy.undo.log ?? [];
+      copy.log = [...(copy.log ?? []), ...reversals];
       copy.undo = null;
       changed = 1;
     } else {
@@ -238,7 +346,7 @@ export class RevisionController {
     this.busy = true;
     this.onChange({ type: 'busy' });
     try { return await this.enqueueWrite(async () => {
-      let wroteBody = false;
+      let wroteBody = false, saveStarted = false;
       try {
         if (signal?.aborted) throw new DetectionCancelledError();
         if (this.target(round, before) !== m) throw new Error('正文身份已变化，请重新检测。');
@@ -250,28 +358,33 @@ export class RevisionController {
         if (m.swipe_info?.[round.swipeId]?.extra) delete m.swipe_info[round.swipeId].extra.token_count;
         c.chatMetadata.tainted = true;
         Object.assign(round, copy);
+        this.syncRound(round, true);
         c.updateMessageBlock(round.messageId, m);
         // Emit the same edit/update events used by the built-in editor (cache invalidation).
         await c.eventSource.emit(c.eventTypes.MESSAGE_EDITED, round.messageId);
         if (chatKey(this.context()) !== round.chatKey || m.mes !== copy.expected) throw new Error('保存期间正文发生变化，请重新检测。');
         if (c.eventTypes.MESSAGE_UPDATED) await c.eventSource.emit(c.eventTypes.MESSAGE_UPDATED, round.messageId);
         if (chatKey(this.context()) !== round.chatKey || m.mes !== copy.expected) throw new Error('保存期间正文发生变化，请重新检测。');
+        saveStarted = true;
         await c.saveChat();
         // saveChat can swallow network failures; read back the current chat to verify.
-        await this.verifySave(c, round, m.mes);
+        await this.verifySave(c, round, m.mes, before);
         return changed;
       } catch (error) {
         if (isDetectionCancelled(error)) throw error;
         // Preserve the proposed draft and roll back only our own still-current text.
-        if (wroteBody && m.mes === copy.expected) {
+        const restore = () => {
+          if (m.mes !== copy.expected || chatKey(this.context()) !== round.chatKey) return;
           m.mes = before;
           if (oldSwipes === undefined) delete m.swipes; else m.swipes = oldSwipes;
           m.extra = oldExtra;
           if (oldSwipeInfo === undefined) delete m.swipe_info; else m.swipe_info = oldSwipeInfo;
           for (const key of Object.keys(round)) if (!Object.hasOwn(originalRound, key)) delete round[key];
           Object.assign(round, originalRound);
-          if (chatKey(this.context()) === round.chatKey) c.updateMessageBlock(round.messageId, m);
-        }
+          c.updateMessageBlock(round.messageId, m);
+        };
+        if (wroteBody && (!saveStarted || error instanceof SaveConflictError && error.status === 'old')) { restore(); this.syncRound(round); }
+        else if (wroteBody) { this.pendingSave = { chatKey: round.chatKey, round, text: copy.expected, before, status: error instanceof SaveConflictError && error.status === 'diverged' ? 'diverged' : 'unconfirmed', restore }; this.savePendingState(); }
         throw new Error(`未能确认保存成功，修改建议仍保留。${error.message}`);
       }
     }, round.chatKey); } finally { this.busy = false; this.onChange(); }
@@ -279,7 +392,7 @@ export class RevisionController {
   selectedCount(round) { return round?.groups.filter(g => g.selected && ready(g)).length ?? 0; }
 }
 
-export async function verifyChatSave(c, round, text) {
+export async function verifyChatSave(c, round, text, before, requireRecord = false) {
   const group = c.groupId !== undefined && c.groupId !== null && c.groupId !== false;
   const character = c.characters?.[c.characterId];
   const body = group ? { id: c.chatId } : { ch_name: character?.name, file_name: c.chatId, avatar_url: character?.avatar };
@@ -288,13 +401,20 @@ export async function verifyChatSave(c, round, text) {
   });
   if (!response.ok) throw new Error('无法读取已保存的聊天，请检查网络。');
   const saved = await response.json();
+  const metadata = saved.find?.(item => item.chat_metadata)?.chat_metadata;
+  const expectedRecord = c.chatMetadata?.[KEY]?.rounds?.find(item => item.id === round.id);
+  const savedRecord = metadata?.[KEY]?.rounds?.find(item => item.id === round.id);
+  const recordMatches = expectedRecord && savedRecord &&
+    JSON.stringify(savedRecord) === JSON.stringify(expectedRecord) &&
+    JSON.stringify(expectedRecord) === JSON.stringify(compactRound(round)) &&
+    JSON.stringify(metadata[KEY]) === JSON.stringify(c.chatMetadata[KEY]);
+  if (requireRecord) {
+    if (!recordMatches) throw new SaveConflictError('old', '服务器尚未保存这次检测记录或草稿状态。');
+    return;
+  }
   const messages = Array.isArray(saved) ? saved.filter(m => typeof m.mes === 'string') : [];
   const m = messages[round.messageId];
-  if (!m || m.extra?.[KEY]?.id !== round.messageUid || m.mes !== text || swipeId(m) !== round.swipeId || Array.isArray(m.swipes) && m.swipes[round.swipeId] !== text) {
-    throw new Error('酒馆尚未保存这版正文，请重试。');
-  }
-  if (round.reviewed) {
-    const metadata = saved.find?.(item => item.chat_metadata)?.chat_metadata;
-    if (!metadata?.[KEY]?.rounds?.some(r => r.id === round.id && r.reviewed)) throw new Error('酒馆尚未保存完成审阅的状态，请重试。');
-  }
+  if (!m || m.extra?.[KEY]?.id !== round.messageUid || swipeId(m) !== round.swipeId) throw new SaveConflictError('diverged', '服务器消息身份或回复版本已变化。');
+  if (m.mes !== text || Array.isArray(m.swipes) && m.swipes[round.swipeId] !== text) throw new SaveConflictError(m.mes === before ? 'old' : 'diverged', '服务器仍是另一版正文。');
+  if (!recordMatches) throw new SaveConflictError('old', '服务器尚未保存这次操作记录或审阅状态。');
 }

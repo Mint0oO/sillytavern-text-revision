@@ -88,7 +88,7 @@ test('fully automatic rules save quietly once, and a higher-priority review over
   assert.equal(saves, 1, 'automatic detection plus body changes must use one save');
   f.emit('GENERATION_ENDED'); await f.flush(); assert.equal(f.c.history().length, 1);
   f.ctx.chat[0].mes = '他极其紧张。';
-  f.c.settings().rules.push({ id: 'conflict', kind: 'word', find: '极其', action: 'replace', values: ['很'], priority: 10 });
+  f.c.settings().rules.push({ id: 'conflict', kind: 'regex', find: '极其', action: 'review', values: [], priority: 10 });
   f.emit('CHARACTER_MESSAGE_RENDERED', 0); await f.flush();
   assert.equal(f.ctx.chat[0].mes, '他极其紧张。'); assert.equal(f.opens(), 1); assert.deepEqual(f.errors, []);
   assert.equal(saves, 2, 'a review-only detection saves its record once');
@@ -134,7 +134,7 @@ test('dry-run and quiet generation notifications do not cancel visible reply det
   }
 });
 
-test('an automatic save failure rolls back body and audit state without a preliminary detection save', async () => {
+test('an uncertain automatic save blocks retries until confirmation', async () => {
   const f = fixture();
   let saves = 0;
   f.ctx.saveChat = async () => { saves++; throw new Error('写入失败'); };
@@ -142,14 +142,14 @@ test('an automatic save failure rolls back body and audit state without a prelim
   f.c.settings().rules = [{ id:'auto', kind:'regex', find:'极其', action:'delete', remove:true, execution:'auto' }];
   f.emit('CHARACTER_MESSAGE_RENDERED', 0); await f.flush();
   assert.equal(saves, 1);
-  assert.equal(f.ctx.chat[0].mes, '他极其疲惫。');
-  assert.notEqual(f.c.current().reviewed, true);
-  assert.equal(f.c.current().log?.length ?? 0, 0);
+  assert.equal(f.ctx.chat[0].mes, '他疲惫。');
+  assert.equal(f.c.pendingSave.status, 'unconfirmed');
+  assert.equal(f.c.current().log?.length ?? 0, 1);
   assert.equal(f.c.busy, false);
   assert.match(f.errors[0], /未能确认保存/);
   f.ctx.saveChat = async () => { saves++; };
   f.emit('GENERATION_ENDED'); await f.flush();
-  assert.equal(saves, 2);
+  assert.equal(saves, 1);
   assert.equal(f.ctx.chat[0].mes, '他疲惫。');
 });
 

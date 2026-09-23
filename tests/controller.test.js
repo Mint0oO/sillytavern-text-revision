@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RevisionController, KEY, verifyChatSave } from '../controller.js';
+import { RevisionController, KEY, SaveConflictError, verifyChatSave } from '../controller.js';
 import { DEFAULT_RULES, ENGINE_VERSION, validateRule } from '../engine.js';
 import { createRuleDraft, simpleRule } from '../rule-editor.js';
 
@@ -83,11 +83,14 @@ test('a detected floor follows a preceding deletion by unique identity and never
   f.ctx.chat.shift();
   await assert.rejects(f.ctl.commit(round), /已不存在|身份无法确认/);
 });
-test('save failure cannot report success and keeps proposed edits available for retry', async () => {
+test('an uncertain save holds local edits and blocks another write until server state is confirmed', async () => {
   const f = fixture(); const r = await f.ctl.detect(); const original = f.ctx.chat[0].mes; f.fail();
   await assert.rejects(f.ctl.commit(r), /未能确认保存/);
-  assert.equal(f.ctx.chat[0].mes, original); assert.equal(r.expected, original);
-  assert.ok(r.groups[0].selected); assert.equal(f.ctl.busy, false);
+  assert.notEqual(f.ctx.chat[0].mes, original); assert.equal(f.ctl.pendingSave.status, 'unconfirmed');
+  await assert.rejects(f.ctl.commit(r), /尚未确认/);
+  f.ctl.verifySave = async () => { throw new SaveConflictError('old', '服务器仍为原文'); };
+  assert.equal(await f.ctl.confirmPendingSave(), 'old');
+  assert.equal(f.ctx.chat[0].mes, original); assert.ok(r.groups[0].selected);
 });
 test('round counts survive apply/rescan; auto events deduplicate and old rounds are read-only', async () => {
   const f = fixture(); const first = await f.ctl.detect();
@@ -96,13 +99,13 @@ test('round counts survive apply/rescan; auto events deduplicate and old rounds 
   const second = await f.ctl.detect();
   assert.equal(first.count, 2); assert.equal(second.count, 0); assert.equal(second.number, 2);
   assert.equal(f.ctl.editable(first), false);
-  assert.equal(f.ctx.chatMetadata[KEY].rounds.length, 2);
+  assert.equal(f.ctx.chatMetadata[KEY].rounds.length, 1);
   // Returning to an already-detected swipe selects that result without another round.
   const m = f.ctx.chat[0]; m.swipe_id = 0; m.mes = m.swipes[0];
   await f.ctl.detect(0, { auto: true });
   m.swipe_id = 1; m.mes = m.swipes[1];
   assert.equal(await f.ctl.detect(0, { auto: true }), null);
-  assert.equal(f.ctl.current().id, second.id); assert.equal(f.ctl.history().length, 3);
+  assert.equal(f.ctl.current().id, second.id); assert.equal(f.ctl.history().length, 2);
 });
 test('a stale host streaming processor cannot lock completed text; changed source still prevents applying', async () => {
   const f = fixture(); f.ctx.streamingProcessor = { isFinished: false, isStopped: false };
@@ -150,7 +153,7 @@ test('server readback distinguishes group and character chats and checks swipe b
   const f = fixture(); const r = await f.ctl.detect();
   f.ctx.characters = [{ name: '测试角色', avatar: 'sample.png' }]; f.ctx.getRequestHeaders = () => ({ 'Content-Type': 'application/json' });
   const calls = [];
-  t.mock.method(globalThis, 'fetch', async (url, opts) => { calls.push([url, JSON.parse(opts.body)]); return { ok: true, json: async () => [{ chat_metadata: {} }, ...f.disk()] }; });
+  t.mock.method(globalThis, 'fetch', async (url, opts) => { calls.push([url, JSON.parse(opts.body)]); return { ok: true, json: async () => [{ chat_metadata: structuredClone(f.ctx.chatMetadata) }, ...f.disk()] }; });
   await verifyChatSave(f.ctx, r, f.ctx.chat[0].mes);
   assert.equal(calls[0][0], '/api/chats/get'); assert.equal(calls[0][1].avatar_url, 'sample.png');
   f.ctx.groupId = 'group1'; await verifyChatSave(f.ctx, r, f.ctx.chat[0].mes);
@@ -158,14 +161,15 @@ test('server readback distinguishes group and character chats and checks swipe b
 });
 
 
-test('removes the retired template once, preserves other rules and keeps launcher defaults', () => {
+test('old rules are preserved for backup but blocked from execution', async () => {
   const f = fixture();
   f.ctx.extensionSettings[KEY] = { rules: [
     { id: 'wolf', find: '像{A}的孤狼一样', kind: 'pattern' },
     { id: 'custom', find: '像{A}一样', kind: 'pattern' },
   ] };
   const s = f.ctl.settings();
-  assert.deepEqual(s.rules.map(r => r.id), ['custom']);
+  assert.deepEqual(s.rules.map(r => r.id), ['wolf', 'custom']);
+  await assert.rejects(f.ctl.detect(), /旧版/);
   assert.equal(s.launcherTransparency, 0);
   assert.equal(s.launcherColor, 'theme');
   s.launcherColor = 'blue'; s.launcherTransparency = 45;
@@ -173,43 +177,14 @@ test('removes the retired template once, preserves other rules and keeps launche
   assert.equal(f.ctl.settings().launcherTransparency, 45);
 });
 
-test('default rule upgrade adds word segmentation once and preserves customized/disabled rules', () => {
+test('new defaults are regex rules and an intentionally empty list stays empty', () => {
   const f = fixture();
-  const old = structuredClone(DEFAULT_RULES.slice(0, -1));
-  delete old[3].punctuation; delete old[3].boundary; old[3].enabled = false;
-  f.ctx.extensionSettings[KEY] = { rules: old, ruleDefaultsVersion: 1 };
-  let settings = f.ctl.settings();
-  assert.equal(settings.rules[3].punctuation, 'following-comma');
-  assert.equal(settings.rules[3].enabled, false);
-  assert.equal(settings.rules.at(-1).find, '{A}极了');
-  settings.rules.pop();
-  assert.equal(f.ctl.settings().rules.length, 5);
-  const customized = fixture();
-  old[3].values = ['小心地']; delete old[3].punctuation;
-  customized.ctx.extensionSettings[KEY] = { rules: old, ruleDefaultsVersion: 1 };
-  assert.equal(customized.ctl.settings().rules[3].punctuation, undefined);
+  assert.ok(f.ctl.settings().rules.every(rule => rule.kind === 'regex'));
+  f.ctx.extensionSettings[KEY] = { rules: [] };
+  assert.deepEqual(f.ctl.settings().rules, []);
 });
 
-test('language initialization cannot attach a stale scan after chat, text, swipe or settings changes', async () => {
-  for (const mutate of [
-    f => { f.ctx.chatId = 'other'; }, f => { f.ctx.chat[0].mes = '新的回复'; },
-    f => { f.ctx.chat[0].swipe_id = 0; }, f => { f.ctl.settings().rules[0].enabled = false; },
-  ]) {
-    const f = fixture(); let release;
-    f.ctl.settings().rules = structuredClone(DEFAULT_RULES);
-    f.ctl.prepareLanguage = () => new Promise(resolve => { release = resolve; });
-    const pending = f.ctl.detect(); mutate(f); release();
-    await assert.rejects(pending, /已变化/);
-    assert.equal(f.ctl.history().length, 0);
-  }
-});
-
-test('language load failure preserves chat and old engine rounds require fresh detection', async () => {
-  const f = fixture(), before = structuredClone(f.ctx.chat);
-  f.ctl.settings().rules = structuredClone(DEFAULT_RULES);
-  f.ctl.prepareLanguage = async () => { throw new Error('加载失败'); };
-  await assert.rejects(f.ctl.detect(), /加载失败/);
-  assert.deepEqual(f.ctx.chat, before);
+test('old engine results require fresh detection', async () => {
   const good = fixture(), r = await good.ctl.detect();
   assert.equal(r.engineVersion, ENGINE_VERSION); delete r.engineVersion;
   assert.equal(good.ctl.editable(r), false);
@@ -217,12 +192,12 @@ test('language load failure preserves chat and old engine rounds require fresh d
   assert.ok(fresh); assert.equal(fresh.engineVersion, ENGINE_VERSION);
 });
 
-test('word and comma revisions persist through apply, reload and undo', async () => {
-  const f = fixture(), source = '他高兴极了。然后像个新兵一样，贴着墙根走。';
-  f.ctl.settings().rules = structuredClone(DEFAULT_RULES);
+test('regex sentence revisions persist through apply, reload and undo', async () => {
+  const f = fixture(), source = '他死死地抓住她。';
+  f.ctl.settings().rules = [validateRule({ kind: 'regex', find: '/死死地?/g', remove: true, action: 'delete' })];
   f.ctx.chat[0].mes = source; f.ctx.chat[0].swipes[1] = source;
   const r = await f.ctl.detect(); await f.ctl.commit(r);
-  assert.equal(f.disk()[0].mes, '他很高兴。然后贴着墙根走。');
+  assert.equal(f.disk()[0].mes, '他抓住她。');
   const reloaded = new RevisionController(() => f.ctx, f.ctl.verifySave);
   await reloaded.commit(reloaded.current(), { undo: true });
   assert.equal(f.disk()[0].mes, source);
@@ -244,10 +219,10 @@ test('automatic regex commit saves only allowed changes, with log, reload and un
   assert.equal(r.reviewed, false); assert.equal(r.log[0].before, '死死地');
   const reloaded = new RevisionController(() => f.ctx, f.ctl.verifySave);
   await reloaded.commit(reloaded.current(), { undo: true });
-  assert.equal(f.disk()[0].mes, source); assert.equal(r.log.length, 0);
-  await f.ctl.commit(r, { automatic: true });
-  await f.ctl.commit(r);
-  assert.equal(f.disk()[0].mes, '他抓住她，紧张。'); assert.equal(r.reviewed, true);
+  assert.equal(f.disk()[0].mes, source); assert.equal(reloaded.current().log.at(-1).rule, '撤销上次应用');
+  await reloaded.commit(reloaded.current(), { automatic: true });
+  await reloaded.commit(reloaded.current());
+  assert.equal(f.disk()[0].mes, '他抓住她，紧张。'); assert.equal(reloaded.current().reviewed, true);
   assert.equal(await f.ctl.detect(0, { auto: true }), null);
 });
 
@@ -266,17 +241,18 @@ test('an empty manual draft deletes the complete detected sentence and undo rest
   group.manual = true; group.draft = ''; group.selected = true;
   await f.ctl.commit(r);
   assert.equal(f.disk()[0].mes, '空位极具吸引力。');
-  assert.deepEqual(r.log.at(-1), { before: '你极其疲惫。', after: '', rule: '手动编辑整句', automatic: false });
+  assert.deepEqual({ before: r.log.at(-1).before, after: r.log.at(-1).after, rule: r.log.at(-1).rule, automatic: r.log.at(-1).automatic }, { before: '你极其疲惫。', after: '', rule: '手动编辑整句', automatic: false });
+  assert.ok(r.log.at(-1).operationId && r.log.at(-1).time);
   await f.ctl.commit(r, { undo: true });
   assert.equal(f.disk()[0].mes, '你极其疲惫。空位极具吸引力。');
 });
 
-test('failed automatic save retains the original, retryable proposal and unread status', async () => {
+test('uncertain automatic save remains pending without silently rolling back', async () => {
   const f = fixture(); f.ctl.settings().rules[0].execution = 'auto';
   const r = await f.ctl.detect(); f.fail();
   await assert.rejects(f.ctl.commit(r, { automatic: true }), /未能确认保存/);
-  assert.equal(r.expected, r.base); assert.notEqual(r.reviewed, true);
-  assert.equal(r.log, undefined); assert.equal(r.groups[0].matches[0].done, false);
+  assert.notEqual(r.expected, r.base); assert.equal(f.ctl.pendingSave.status, 'unconfirmed');
+  assert.equal(r.log.length, 1);
 });
 
 test('server readback requires persisted completion metadata, even when text is unchanged', async t => {
@@ -286,6 +262,40 @@ test('server readback requires persisted completion metadata, even when text is 
   t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => [{ chat_metadata: metadata }, ...f.disk()] }));
   r.reviewed = true;
   await assert.rejects(verifyChatSave(f.ctx, r, r.expected), /审阅/);
+  f.ctl.syncRound(r);
   metadata = structuredClone(f.ctx.chatMetadata);
   await verifyChatSave(f.ctx, r, r.expected);
+});
+
+test('server readback separates an old body, a third-party body, and an unknown network result', async t => {
+  const f = fixture(), r = await f.ctl.detect(), before = f.ctx.chat[0].mes, proposed = before.replace('极其', '');
+  f.ctx.characters = [{ name: '测试', avatar: 'demo.png' }]; f.ctx.getRequestHeaders = () => ({});
+  let body = before;
+  t.mock.method(globalThis, 'fetch', async () => ({ ok: true, json: async () => [{ chat_metadata: structuredClone(f.ctx.chatMetadata) }, { ...f.disk()[0], mes: body, swipes: ['另一个版本。', body] }] }));
+  await assert.rejects(verifyChatSave(f.ctx, r, proposed, before), error => error instanceof SaveConflictError && error.status === 'old');
+  body = '第三方编辑';
+  await assert.rejects(verifyChatSave(f.ctx, r, proposed, before), error => error instanceof SaveConflictError && error.status === 'diverged');
+  body = proposed;
+  await verifyChatSave(f.ctx, r, proposed, before);
+  t.mock.restoreAll();
+  t.mock.method(globalThis, 'fetch', async () => { throw new Error('回读超时'); });
+  await assert.rejects(verifyChatSave(f.ctx, r, proposed, before), /回读超时/);
+});
+
+test('one floor holds stable swipe versions while repeated detection updates its version', async () => {
+  const f = fixture(), m = f.ctx.chat[0];
+  m.swipe_info = [{ gen_started: 'generation-A' }, { gen_started: 'generation-B' }];
+  const first = await f.ctl.detect(0, { persist: false });
+  const again = await f.ctl.detect(0, { persist: false });
+  assert.equal(first.version, 1); assert.equal(again.version, 1);
+  assert.equal(f.ctl.history().length, 1);
+  m.swipe_id = 0; m.mes = m.swipes[0];
+  const other = await f.ctl.detect(0, { persist: false });
+  assert.equal(other.version, 2);
+  m.swipe_id = 1; m.mes = m.swipes[1];
+  m.swipe_info[1].gen_started = 'generation-C';
+  const reused = await f.ctl.detect(0, { persist: false });
+  assert.equal(reused.version, 3);
+  assert.deepEqual(f.ctl.history().map(item => item.version), [1, 2, 3]);
+  assert.equal(new Set(f.ctl.history().map(item => item.messageUid)).size, 1);
 });

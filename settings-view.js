@@ -1,6 +1,6 @@
 export const executionDescription = execution => execution === 'auto'
-  ? '自动触发时应用修改并保存；手动检测先展示结果。仅提示项、冲突项仍需审阅，兼容规则沿用原处理方式。'
-  : '检测后先展示结果，由你选择并应用。兼容规则沿用原处理方式。';
+  ? '自动触发时应用修改并保存；手动检测先展示结果。仅提示项、冲突项仍需审阅。'
+  : '检测后先展示结果，由你选择并应用。';
 
 export function renderSettingsView(s, { legend, slider, glyph }) {
   const select = (id, options, value, attrs = '') => `<span class="tr-setting-select"><select id="${id}" ${attrs}>${options.map(([v, text]) => `<option value="${v}" ${v === value ? 'selected' : ''}>${text}</option>`).join('')}</select><svg class="tr-select-arrow" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="m2 4 4 4 4-4"/></svg></span>`;
@@ -11,7 +11,7 @@ export function renderSettingsView(s, { legend, slider, glyph }) {
       <h3 id="tr-running-title" tabindex="-1">运行设置</h3>
       ${toggle('tr-plugin-enabled', '启用插件', s.enabled !== false)}
       ${toggle('tr-auto', '自动检测', s.autoScan, '开启后，在 AI 回复完成时执行规则；关闭后仍可手动检测。')}
-      ${toggle('tr-history-detection', '历史检测', s.historyDetection !== false, '开启后显示每层检测图标；关闭后隐藏，不影响自动检测。')}
+      ${toggle('tr-history-detection', '显示逐楼层检测入口', s.historyDetection !== false, '开启后显示每层检测图标；关闭后隐藏，不影响自动检测。')}
       ${field('tr-rule-execution', '处理方式', select('tr-rule-execution', [['review', '人工审查'], ['auto', '自动应用']], s.ruleExecution ?? 'review', 'aria-describedby="tr-execution-help"'), `<span id="tr-execution-help" role="status">${executionDescription(s.ruleExecution)}</span>`, 'tr-setting-execution')}
     </section>
     <section class="tr-settings-section" aria-labelledby="tr-scope-title">
@@ -31,8 +31,7 @@ export function renderSettingsView(s, { legend, slider, glyph }) {
       <div class="tr-palette-preview" aria-label="修订配色预览">${legend()}<p class="tr-sentence">他的神情<del>极其</del><ins>十分</ins>冷漠。<br>他<mark>像丢了魂一样</mark>愣在原地。</p></div>
       <div class="tr-launcher-group">
         ${toggle('tr-launcher-enabled', '显示悬浮球', s.showLauncher)}
-        ${field('tr-launcher-color', '图标颜色', `${select('tr-launcher-color', [['theme', '跟随美化'], ['graphite', '石墨'], ['blue', '浅蓝'], ['sage', '鼠尾草'], ['lavender', '淡紫'], ['sand', '奶茶']], s.launcherColor)}<span class="tr-launcher-preview" data-launcher-preview aria-label="悬浮球预览">${glyph('pencil')}</span>`, '', 'tr-setting-launcher-color')}
-        ${slider('tr-launcher-opacity', '图标透明度', s.launcherTransparency)}
+        ${s.showLauncher ? `${field('tr-launcher-color', '图标颜色', `${select('tr-launcher-color', [['theme', '跟随美化'], ['graphite', '石墨'], ['blue', '浅蓝'], ['sage', '鼠尾草'], ['lavender', '淡紫'], ['sand', '奶茶']], s.launcherColor)}<span class="tr-launcher-preview" data-launcher-preview aria-label="悬浮球预览">${glyph('pencil')}</span>`, '', 'tr-setting-launcher-color')}${slider('tr-launcher-opacity', '图标透明度', s.launcherTransparency)}` : ''}
       </div>
     </section>
   </div>`;

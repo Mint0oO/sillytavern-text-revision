@@ -1,6 +1,5 @@
-import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, needsLanguage } from './engine.js';
-import { clone, isDetectionCancelled } from './controller.js';
-import { ensureLanguage } from './language.js';
+import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope } from './engine.js';
+import { clone, chatKey, isDetectionCancelled } from './controller.js';
 import { createRuleDraft, simpleRule } from './rule-editor.js';
 import { renderRulesView, ruleCountText } from './rules-view.js';
 import { scanPrepared } from './scanner.js';
@@ -23,8 +22,9 @@ export function renderChangeLog(log = []) {
     while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) { endBefore--; endAfter--; }
     const oldText = before.slice(start, endBefore).join(''), newText = after.slice(start, endAfter).join('');
     if (!oldText && !newText) continue;
-    if (!newText) deleted.push(`<p class="tr-sentence"><del>${esc(oldText)}</del></p>`);
-    else replaced.push(`<p class="tr-sentence">${oldText ? `<del>${esc(oldText)}</del> → ` : ''}<ins>${esc(newText)}</ins></p>`);
+    const details = entry.time || entry.rule ? `<details class="tr-log-provenance"><summary>详情</summary><span>${entry.time ? esc(new Date(entry.time).toLocaleString()) : '时间未记录'} · ${entry.automatic === true ? '自动' : entry.automatic === false ? '手动' : '来源未记录'}${entry.rule ? ` · ${esc(entry.rule)}` : ''}</span></details>` : '';
+    if (!newText) deleted.push(`<div><p class="tr-sentence"><del>${esc(oldText)}</del></p>${details}</div>`);
+    else replaced.push(`<div><p class="tr-sentence">${oldText ? `<del>${esc(oldText)}</del> → ` : ''}<ins>${esc(newText)}</ins></p>${details}</div>`);
   }
   if (!deleted.length && !replaced.length) return '';
   return `<details class="tr-change-log tr-change-log-root"><summary>修改日志 · ${deleted.length + replaced.length} 处</summary><div class="tr-change-log-groups">${[['删除', deleted], ['替换', replaced]].map(([label, rows]) => `<details class="tr-change-log"><summary>${label} · ${rows.length} 处</summary>${rows.join('') || '<p class="tr-meta">暂无记录</p>'}</details>`).join('')}</div></details>`;
@@ -36,13 +36,14 @@ export class RevisionUI {
     this.screen = 'review';
     this.edit = null;
     this.drafts = new Map();
+    this.draftStorageKey = 'henge-review-drafts-v1';
+    this.loadDrafts();
     this.ruleId = null;
     this.ruleFilters = { search: '' };
     this.ruleDeleteMode = false;
     this.ruleDeleteIds = new Set();
     this.ruleDrafts = new Map();
     this.ruleOriginal = null;
-    this.historical = null;
     this.expandedRoundId = null;
     this.scopeDraft = null;
     this.scopeMode = null;
@@ -127,6 +128,11 @@ export class RevisionUI {
     });
     this.c.onChange = event => {
       if (event?.type === 'busy') { this.updateBusyControls(); return; }
+      if (event?.type === 'record-save-failed') {
+        this.say('检测记录尚未可靠保存，可重试。', true);
+        if (this.dialog.open && this.screen === 'review' && !this.dialog.querySelector('[data-action="retry-record-save"]')) this.dialog.querySelector('.tr-main')?.insertAdjacentHTML('afterbegin', `<div class="tr-save-pending">检测记录尚未可靠保存。${button('重试保存记录', 'data-action="retry-record-save"')}</div>`);
+        return;
+      }
       this.badge();
       if (event?.type === 'detection' && this.panelRound()?.id !== event.round.id) return;
       if (this.edit && this.edit.roundId !== this.panelRound()?.id) this.edit = null;
@@ -213,6 +219,35 @@ export class RevisionUI {
     this.launcher.setAttribute('aria-label', `打开词句修订${count ? `，${count} 处待处理` : ''}`);
   }
   isMainOpen() { return Boolean(this.dialog.open); }
+  loadDrafts() {
+    try {
+      for (const item of JSON.parse(sessionStorage.getItem(this.draftStorageKey) || '[]')) {
+        if (item?.key && typeof item.text === 'string') this.drafts.set(item.key, item);
+      }
+    } catch { /* Private browsing may disable session storage. */ }
+  }
+  saveDrafts() {
+    try {
+      const items = [...this.drafts.values()].map(({ key, roundId, groupId, text, expanded, chatKey, messageUid, swipeId, expected, rulesKey, values }) => ({ key, roundId, groupId, text, expanded, chatKey, messageUid, swipeId, expected, rulesKey, values }));
+      sessionStorage.setItem(this.draftStorageKey, JSON.stringify(items));
+    } catch { this.say('浏览器无法保存草稿；关闭或刷新前请复制输入内容。', true); }
+  }
+  draftFor(round, groupId) {
+    const key = `${round.id}:${groupId}`, saved = this.drafts.get(key);
+    if (!saved || !round.groups?.[groupId]) return null;
+    if (saved.chatKey !== round.chatKey || saved.messageUid !== round.messageUid || saved.swipeId !== round.swipeId || saved.expected !== round.expected || saved.rulesKey !== round.rulesKey) return null;
+    const matches = clone(round.groups[groupId].matches);
+    for (const match of matches) if (Object.hasOwn(saved.values ?? {}, match.id)) match.value = saved.values[match.id];
+    return { ...saved, matches };
+  }
+  storeEdit() {
+    if (!this.edit) return;
+    const round = this.panelRound();
+    if (!round) return;
+    Object.assign(this.edit, { chatKey: round.chatKey, messageUid: round.messageUid, swipeId: round.swipeId, expected: round.expected, rulesKey: round.rulesKey, values: Object.fromEntries(this.edit.matches.map(match => [match.id, match.value])) });
+    this.drafts.set(this.edit.key, this.edit);
+    this.saveDrafts();
+  }
   panelRound() { return this.c.history().find(round => round.id === this.panelRoundId) ?? null; }
   targetFloor() {
     try { return this.panelTarget ? this.c.resolveTarget(this.panelTarget) : null; }
@@ -230,11 +265,11 @@ export class RevisionUI {
     this.panelRoundId = null;
     this.detecting = false;
     this.edit = null;
-    this.drafts.clear();
     this.reviewSelection = null;
   }
   async detectPanelTarget() {
     this.c.assertIdle();
+    if (this.edit || this.panelRound()?.groups.some(g => this.draftFor(this.panelRound(), g.id))) throw new Error('这句还有未完成的编辑，请先完成或取消编辑，再重新检测。');
     this.panelDetection?.abort();
     const detection = new AbortController();
     this.panelDetection = detection;
@@ -293,6 +328,10 @@ export class RevisionUI {
       }
     }
     this.render();
+    if (!force && this.panelRound()) {
+      const draft = this.panelRound().groups.map(g => this.draftFor(this.panelRound(), g.id)).find(Boolean);
+      if (draft) { this.edit = draft; this.render(); }
+    }
     if (this.c.settings().enabled !== false && this.panelTarget && (force || !this.panelRound())) await this.detectPanelTarget();
   }
   async openDetected(round) {
@@ -303,7 +342,7 @@ export class RevisionUI {
     await this.open(undefined, { force: false, round });
     return true;
   }
-  resetChat() { this.endPanelSession(); this.say(''); this.historical = null; this.expandedRoundId = null; this.c.selectedId = null; this.screen = 'review'; this.c.onChange(); }
+  resetChat() { this.endPanelSession(); this.say(''); this.expandedRoundId = null; this.c.selectedId = null; this.screen = 'review'; this.c.onChange(); }
   theme() {
     const s = this.c.settings();
     this.dialog.dataset.theme = s.theme;
@@ -319,13 +358,13 @@ export class RevisionUI {
   render() {
     const scroll = this.dialog.querySelector('.tr-main').scrollTop;
     this.theme();
-    const title = { review: '词句修订', rules: '规则', settings: '设置', extract: '标签提取', exclude: '内容排除', history: '检测记录', snapshot: '检测详情' }[this.screen];
-    const parent = this.screen === 'snapshot' ? ['history', '记录'] : ['extract', 'exclude'].includes(this.screen) ? ['settings', '设置'] : ['review', '修订'];
+    const title = { review: '词句修订', rules: '规则', settings: '设置', extract: '标签提取', exclude: '内容排除', history: '检测记录' }[this.screen];
+    const parent = ['extract', 'exclude'].includes(this.screen) ? ['settings', '设置'] : ['review', '修订'];
     const nav = this.screen === 'review' ? button('规则', 'data-screen="rules"') + button('记录', 'data-screen="history"') + button('设置', 'data-screen="settings"') : button(`‹ ${parent[1]}`, `data-screen="${parent[0]}"`);
     const count = this.screen === 'rules' ? `<span class="tr-head-count">${ruleCountText(this.c.settings().rules)}</span>` : '';
     this.dialog.querySelector('.tr-head').innerHTML = `<div class="tr-head-title"><h2>${title}</h2>${count}</div><nav>${nav}${icon('xmark', '关闭修订面板', 'data-action="close"')}</nav>`;
     this.dialog.querySelector('.tr-foot').innerHTML = '';
-    const draw = { review: 'review', snapshot: 'review', rules: 'rulesView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
+    const draw = { review: 'review', rules: 'rulesView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
     this[draw]();
     this.updateBusyControls();
     this.dialog.querySelector('.tr-main').scrollTop = scroll;
@@ -348,13 +387,17 @@ export class RevisionUI {
   review() {
     this.reviewSelection = null;
     if (this.c.settings().enabled === false) { this.body('<div class="tr-empty">插件已停用。可以在“设置”中重新启用。</div>'); return; }
-    const history = this.screen === 'snapshot';
+    const history = false;
     if (!history && this.detecting) { const floor = this.targetFloor(); this.body(`<div class="tr-empty">正在检测${floor === null ? '所选楼层' : ` ${floor}#`}……</div>`); return; }
-    const r = history ? this.c.history().find(r => r.id === this.historical) : this.panelRound();
+    const r = this.panelRound();
     if (!r) { this.body(`<div class="tr-empty">${this.panelTarget ? '尚未获得所选楼层的检测结果。' : '打开一条 AI 回复后开始检测。'}${button(this.panelTarget ? '重新检测' : '检测最新回复', `data-action="${this.panelTarget ? 'scan' : 'scan-latest'}"`)}</div>`); return; }
     const editable = !history && this.c.editable(r);
     const floor = this.c.locateRound(r);
-    this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段${floor >= 0 ? `　${floor}#` : ''}</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${!editable && !history ? `<p class="tr-meta">${floor < 0 ? '所选楼层已不存在或身份无法确认，请重新选择该楼层。' : '正文或检测范围已变化，请重新检测。'}</p>` : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
+    const pending = this.c.pendingSave && this.c.pendingSave.chatKey === r.chatKey ? `<div class="tr-save-pending" role="alert"><span>${this.c.pendingSave.status === 'diverged' ? '服务器正文发生冲突，请在酒馆中核对。' : '保存结果尚未确认，当前修改暂不能继续应用。'}</span>${button('重新确认', 'data-action="confirm-save"')}<details><summary>复制本地修改</summary><textarea readonly rows="4">${esc(this.c.pendingSave.text)}</textarea></details></div>` : '';
+    const stale = [...(this.drafts?.values() ?? [])].filter(d => d.chatKey === r.chatKey && d.messageUid === r.messageUid && !this.draftFor(r, d.groupId));
+    const staleDrafts = stale.length ? `<details class="tr-stale-drafts"><summary>${stale.length} 份旧草稿需人工核对</summary>${stale.map(d => `<label>旧草稿<textarea readonly rows="3">${esc(d.text)}</textarea></label>`).join('')}</details>` : '';
+    const recordFailure = this.c.recordSaveError ? `<div class="tr-save-pending">检测记录尚未可靠保存。${button('重试保存记录', 'data-action="retry-record-save"')}</div>` : '';
+    this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段${floor >= 0 ? `　${floor}#` : ''}</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${pending}${recordFailure}${staleDrafts}${!editable && !history ? `<p class="tr-meta">${floor < 0 ? '所选楼层已不存在或身份无法确认，请重新选择该楼层。' : '正文或检测范围已变化，请重新检测。'}</p>` : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
     if (r.log?.length) this.dialog.querySelector('.tr-main').insertAdjacentHTML('beforeend', renderChangeLog(r.log));
     if (!history) this.reviewFooter(r, editable);
   }
@@ -381,7 +424,7 @@ export class RevisionUI {
       const d = this.edit;
       editor = `<div class="tr-inline-editor"><label class="tr-edit-field"><span class="tr-label">修改后</span><textarea id="tr-edit" aria-label="编辑整句" rows="3">${esc(d.text)}</textarea></label><details class="tr-candidates" ${d.expanded ? 'open' : ''}><summary>替换候选</summary>${d.matches.filter(m => m.options.length || m.remove).map(m => `<div class="tr-candidate"><label for="tr-option-${m.id}">${esc(m.old)}</label><div class="tr-replace">${m.options.length ? `<select id="tr-option-${m.id}" data-option="${m.id}"><option value="" disabled ${m.value === null || m.value === '' ? 'selected' : ''}>替换为…</option>${m.options.map((v, i) => `<option value="${i}" ${m.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>${m.options.length > 1 ? button('换一个', `data-random="${m.id}"`) : ''}` : '<span class="tr-meta">未设置替换词</span>'}</div>${button('删除', `class="tr-delete" data-delete-match="${m.id}" aria-pressed="${m.value === ''}"`)}</div>`).join('') || '<p class="tr-meta">请直接编辑整句。</p>'}</details><div class="tr-edit-actions"><div>${button('不改这句', `data-keep="${g.id}"`)}${button('删除整句', 'class="tr-delete-sentence" data-action="delete-sentence"')}</div><div>${button('取消', 'data-action="cancel-edit"')}${button('完成', 'class="tr-primary" data-action="finish-edit"')}</div></div></div>`;
     }
-    const actions = editable && !editing ? `<div class="tr-row-actions">${icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`)}<button type="button" class="tr-icon tr-more" aria-label="展开第${g.id + 1}句快捷操作" aria-expanded="false" data-quick-toggle="${g.id}">${glyph('more')}</button><div class="tr-quick-menu" data-quick-menu="${g.id}" hidden><button type="button" data-quick="keep" data-quick-group="${g.id}">保留</button><button type="button" class="tr-delete" data-quick="delete" data-quick-group="${g.id}">删除</button></div></div>` : '';
+    const actions = editable && !editing ? `<div class="tr-row-actions">${icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`)}<button type="button" class="tr-icon tr-more" aria-label="展开第${g.id + 1}句快捷操作" aria-expanded="false" data-quick-toggle="${g.id}">${glyph('more')}</button><div class="tr-quick-menu" data-quick-menu="${g.id}" hidden><button type="button" data-quick="restore" data-quick-group="${g.id}">恢复</button><button type="button" class="tr-delete" data-quick="delete" data-quick-group="${g.id}">删除</button></div></div>` : '';
     return `<section data-group="${g.id}" class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state ? 'tr-row-has-state' : ''}">${content}${state}${actions}${editor}</section>`;
   }
   refreshReviewRows(r, ids) {
@@ -434,6 +477,14 @@ export class RevisionUI {
     setTimeout(() => URL.revokeObjectURL(url), 0);
     this.say(`已导出 ${this.c.settings().rules.length} 条规则。文件不包含聊天、记录或其他设置。`);
   }
+  exportRawRules() {
+    const data = { type: 'henge-legacy-rule-backup', exportedAt: new Date().toISOString(), rules: clone(this.c.settings().rules) };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' }));
+    const link = document.createElement('a'); link.href = url; link.download = `henge-旧规则备份-${Date.now()}.json`;
+    document.body.append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    this.say('已发起旧规则原始备份下载；该备份仅用于保留资料，不能作为新版规则集导入。');
+  }
   async openRuleImport(file) {
     if (file.size > MAX_RULE_SET_BYTES) throw new Error('JSON 文件超过 25 MB，无法导入。');
     const imported = parseRuleSet(await file.text());
@@ -457,16 +508,12 @@ export class RevisionUI {
     const skipped = result.skipped ? `，跳过 ${result.skipped} 条重复规则` : '';
     this.say(`${mode === 'append' ? '已追加' : '已替换'} ${result.added} 条规则${skipped}。重新检测后生效。`);
   }
-  ruleForm() {
-    if (!this.ruleDrafts.has(this.ruleId)) this.ruleDrafts.set(this.ruleId, createRuleDraft(this.c.settings().rules.find(r => r.id === this.ruleId)));
-    return renderRuleForm(this.ruleDrafts.get(this.ruleId), { canDelete: this.ruleId !== 'new' });
-  }
   openRuleModal(ruleId = 'new') {
     this.ruleId = ruleId;
     if (!this.ruleDrafts.has(ruleId)) this.ruleDrafts.set(ruleId, createRuleDraft(this.c.settings().rules.find(r => r.id === ruleId)));
     const draft = this.ruleDrafts.get(ruleId);
     this.ruleOriginal = JSON.stringify(draft);
-    this.ruleModal.querySelector('h3').textContent = ruleId === 'new' ? '新建规则' : draft.legacy ? '查看兼容规则' : '编辑规则';
+    this.ruleModal.querySelector('h3').textContent = ruleId === 'new' ? '新建规则' : '编辑规则';
     this.ruleModal.querySelector('.tr-modal-body').innerHTML = renderRuleForm(draft, { canDelete: ruleId !== 'new' });
     if (!this.ruleModal.open) this.ruleModal.showModal();
     // Do not summon the phone keyboard just by opening an existing rule.
@@ -487,15 +534,14 @@ export class RevisionUI {
     if (!sample.trim()) throw new Error('请先填写测试文字。');
     if (sample.length > 8000) throw new Error('测试文字最多 8000 字。');
     const target = this.dialog.querySelector('#tr-rule-preview');
-    const inputSnapshot = JSON.stringify(draft);
+    const inputSnapshot = JSON.stringify(draft), previewId = this.previewId = (this.previewId ?? 0) + 1;
     target.textContent = '正在检测…';
     try {
-      const rule = this.draftRule();
-      if (needsLanguage([rule])) await ensureLanguage();
+      const rule = { ...this.draftRule(), enabled: true };
       const round = await scanPrepared(sample, [rule], { context: this.c.context() });
-      if (!target.isConnected || JSON.stringify(draft) !== inputSnapshot) return;
+      if (!target.isConnected || !this.ruleModal.open || this.previewId !== previewId || JSON.stringify(draft) !== inputSnapshot) return;
       target.innerHTML = round.groups.map(g => `<p class="tr-sentence">${inlineHTML(g)}</p><p class="tr-meta">${g.matches.map(m => Object.entries(m.captures).map(([key, value]) => `${esc(key)} = ${esc(value)}`).join('；')).filter(Boolean).join('<br>')}</p>`).join('') || '<p class="tr-meta">没有命中这条规则。</p>';
-    } catch (error) { target.textContent = error.message; }
+    } catch (error) { if (target.isConnected && this.ruleModal.open && this.previewId === previewId && JSON.stringify(draft) === inputSnapshot) target.textContent = error.message; }
   }
   slider(id, label, value, max = 100) {
     const normalized = Math.max(0, Math.min(max, Number(value) || 0));
@@ -532,7 +578,7 @@ export class RevisionUI {
     // Validate even disabled drafts, but retain names while their switch is off.
     const checked = normalizeScope({ ...d, extractEnabled: true, excludeEnabled: true });
     Object.assign(this.c.settings(), { extractTags: checked.extractTags, excludeRules: clone(d.excludeRules), extractEnabled: d.extractEnabled, excludeEnabled: d.excludeEnabled });
-    this.c.saveSettings(); this.edit = null; this.drafts.clear();
+    this.c.saveSettings(); this.edit = null;
     this.scopeModal.close(); this.render(); this.say('已保存，重新检测后生效。');
   }
   historyView() {
@@ -540,10 +586,15 @@ export class RevisionUI {
     const records = history.slice().reverse().map(r => {
       const expanded = this.expandedRoundId === r.id;
       const floor = this.c.locateRound(r);
-      const detail = expanded ? `<div class="tr-record-detail"><p class="tr-meta">${new Date(r.time).toLocaleString()}${r.reviewed ? ' · 已完成审阅' : ''}</p><div class="tr-rows">${r.groups.map(g => this.row(g, false)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>${r.log?.length ? renderChangeLog(r.log) : ''}</div>` : '';
-      return `<section class="tr-record"><button type="button" class="tr-record-summary" data-round="${esc(r.id)}" aria-expanded="${expanded}" aria-label="${expanded ? '收起' : '展开'}第 ${r.number} 轮检测详情"><span class="tr-record-number">第 ${r.number} 轮</span><span class="tr-record-reply">回复 ${floor >= 0 ? `${floor}#` : '已失效'}</span><span class="tr-record-count">${r.count}处/${r.groups.length}字段</span><span class="tr-record-progress">${processed(r)}/${r.count} 已处理</span><span class="tr-record-chevron">${glyph('chevron-down')}</span></button>${detail}</section>`;
+      const label = `${floor >= 0 ? floor : r.messageId ?? '?'}# ${r.version ?? 1}`;
+      const count = r.summary?.count ?? r.count, fields = r.summary?.fields ?? r.groups.length;
+      const detail = expanded ? `<div class="tr-record-detail"><p class="tr-meta">${new Date(r.time).toLocaleString()}${r.reviewed ? ' · 已完成审阅' : ''}${r.logOnly ? ' · 仅保留修改日志' : ''}${floor < 0 ? ' · 原消息已失效' : ''}</p>${r.logOnly ? '<p class="tr-meta">句段详情已按记录保留策略清理。</p>' : `<div class="tr-rows">${r.groups.map(g => this.row(g, false)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`}${r.log?.length ? renderChangeLog(r.log) : '<p class="tr-meta">无修改日志</p>'}</div>` : '';
+      return `<section class="tr-record"><button type="button" class="tr-record-summary" data-round="${esc(r.id)}" aria-expanded="${expanded}" aria-label="${expanded ? '收起' : '展开'}${label} 检测记录"><span class="tr-record-number">${label}</span><span class="tr-record-reply">${floor >= 0 ? '回复版本' : '已失效'}</span><span class="tr-record-count">${count}处/${fields}字段</span><span class="tr-record-progress">${r.log?.length ?? 0} 条修改</span><span class="tr-record-chevron">${glyph('chevron-down')}</span></button>${detail}</section>`;
     }).join('');
-    this.body(`<p class="tr-meta tr-history-meta">共检测 ${this.c.context().chatMetadata?.text_revision?.total ?? 0} 轮 · 保留最近 ${history.length} 轮</p>${records || '<p class="tr-empty">还没有检测记录。</p>'}`);
+    const floors = new Set(history.map(r => r.messageUid)).size;
+    const legacy = this.c.context().chatMetadata?.text_revision?.legacyBackup;
+    const backup = legacy?.length ? `<div class="tr-history-backup"><p class="tr-meta">旧记录仍保留在聊天中。请先导出备份，再清理旧副本以完成瘦身。</p>${button('导出旧记录备份', 'data-action="export-history-backup"')}${this.historyBackupExported === chatKey(this.c.context()) ? button('清理已备份的旧副本', 'data-action="clear-history-backup"') : ''}</div>` : '';
+    this.body(`<p class="tr-meta tr-history-meta">累计检测 ${this.c.context().chatMetadata?.text_revision?.total ?? 0} 次 · 保留 ${floors} 层／${history.length} 个内容版本</p>${backup}${records || '<p class="tr-empty">还没有检测记录。</p>'}`);
   }
   pointerDown(e) {
     const b = e.target.closest?.('button');
@@ -593,8 +644,9 @@ export class RevisionUI {
       this.c.target(r); this.c.assertIdle();
       if (!g || !this.c.editable(r)) throw new Error('正文或检测范围已变化，请重新检测。');
       if (this.edit && this.edit.groupId !== id) throw new Error('请先完成或取消当前编辑。');
-      if (data.quick === 'keep') {
-        g.kept = true; g.selected = false; g.matches.forEach(m => { m.done = true; });
+      if (data.quick === 'restore') {
+        g.kept = true; g.manual = false; g.draft = null; g.selected = false;
+        g.matches.forEach(m => { m.done = true; });
       } else if (data.quick === 'delete') {
         g.kept = false; g.manual = true; g.draft = ''; g.selected = true;
       }
@@ -634,8 +686,10 @@ export class RevisionUI {
       const r = this.panelRound(); this.c.target(r); this.c.assertIdle();
       const previousId = this.edit?.groupId;
       const id = Number(data.edit), g = r.groups[id], key = `${r.id}:${id}`;
-      this.edit = this.drafts.get(key) ?? { roundId: r.id, groupId: id, key, text: proposal(g), matches: clone(g.matches), expanded: false };
-      this.drafts.set(key, this.edit); this.refreshReviewRows(r, [previousId, id]); this.dialog.querySelector('#tr-edit').focus(); return;
+      const protectedFloors = new Set([...this.drafts.values()].map(d => `${d.chatKey}:${d.messageUid}`));
+      if (!this.drafts.has(key) && !protectedFloors.has(`${r.chatKey}:${r.messageUid}`) && protectedFloors.size >= 10) throw new Error('已保护 10 个楼层的未完成草稿，请先完成或取消其中一个。');
+      this.edit = this.draftFor(r, id) ?? { roundId: r.id, groupId: id, key, text: proposal(g), matches: clone(g.matches), expanded: false };
+      this.storeEdit(); this.refreshReviewRows(r, [previousId, id]); this.dialog.querySelector('#tr-edit').focus(); return;
     }
     if (data.random !== undefined || data.deleteMatch !== undefined) {
       const m = this.edit.matches.find(m => m.id === Number(data.random ?? data.deleteMatch));
@@ -645,9 +699,35 @@ export class RevisionUI {
     }
     if (data.keep !== undefined) {
       const r = this.panelRound(), g = r.groups[Number(data.keep)]; g.kept = true; g.selected = false; g.matches.forEach(m => { m.done = true; });
-      this.drafts.delete(this.edit?.key); this.edit = null; this.refreshReviewRows(r, [g.id]); this.badge(); await this.c.persistDraft(); return;
+      this.drafts.delete(this.edit?.key); this.saveDrafts(); this.edit = null; this.refreshReviewRows(r, [g.id]); this.badge(); await this.c.persistDraft(); return;
     }
     switch (data.action) {
+      case 'retry-record-save': await this.c.persistDraft(); this.render(); this.say('检测记录已重新提交保存。'); break;
+      case 'export-history-backup': {
+        const legacy = this.c.context().chatMetadata?.text_revision?.legacyBackup;
+        if (!legacy?.length) throw new Error('当前聊天没有待导出的旧记录。');
+        const blob = new Blob([JSON.stringify({ type: 'henge-history-backup', exportedAt: new Date().toISOString(), chat: this.c.context().chatId, rounds: legacy }, null, 2)], { type: 'application/json' });
+        const url = URL.createObjectURL(blob), link = document.createElement('a');
+        link.href = url; link.download = `Henge-旧记录备份-${Date.now()}.json`;
+        document.body.append(link); link.click(); link.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 60000);
+        this.historyBackupExported = chatKey(this.c.context()); this.render(); this.say('已发起本地备份下载。请确认文件已保存后，再清理旧副本。');
+        break;
+      }
+      case 'clear-history-backup': {
+        if (this.historyBackupExported !== chatKey(this.c.context())) throw new Error('请先导出当前聊天的旧记录备份。');
+        const metadata = this.c.context().chatMetadata.text_revision, backup = metadata.legacyBackup;
+        delete metadata.legacyBackup;
+        try { await this.c.persistDraft(); }
+        catch (error) { metadata.legacyBackup = backup; throw error; }
+        this.render(); this.say('旧副本已清理并保存。');
+        break;
+      }
+      case 'confirm-save': {
+        const result = await this.c.confirmPendingSave();
+        this.say(result === 'saved' ? '服务器已确认保存。' : '服务器仍是原文；本地建议已恢复，可重新应用。');
+        break;
+      }
       case 'finish-review': await this.c.finishReview(this.panelRound()); this.say('本轮已完成，未应用的内容保留，不再提醒。'); break;
       case 'begin-rule-delete': this.ruleDeleteMode = true; this.ruleDeleteIds.clear(); this.say(''); this.render(); break;
       case 'cancel-rule-delete': this.ruleDeleteMode = false; this.ruleDeleteIds.clear(); this.say(''); this.render(); break;
@@ -660,6 +740,7 @@ export class RevisionUI {
         this.c.saveSettings(); this.render(); this.say(`已删除 ${count} 条规则，重新检测后生效。`); break;
       }
       case 'export-rules': this.exportRules(); break;
+      case 'export-rules-raw': this.exportRawRules(); break;
       case 'import-rules': this.dialog.querySelector('#tr-rule-import-file')?.click(); break;
       case 'import-append': this.importRules('append'); break;
       case 'import-replace': this.importRules('replace'); break;
@@ -695,7 +776,7 @@ export class RevisionUI {
       }
       case 'cancel-edit': {
         const id = this.edit.groupId;
-        this.drafts.delete(this.edit.key); this.edit = null;
+        this.drafts.delete(this.edit.key); this.saveDrafts(); this.edit = null;
         this.refreshReviewRows(this.panelRound(), [id]); break;
       }
       case 'delete-sentence': await this.finishEdit(''); break;
@@ -718,6 +799,7 @@ export class RevisionUI {
     if (e.target.dataset.boundary) this.scopeDraft.excludeRules[Number(e.target.dataset.pair)][e.target.dataset.boundary] = e.target.value;
     if (e.target.id === 'tr-edit' && this.edit) {
       this.edit.text = e.target.value;
+      this.storeEdit();
       const g = this.panelRound().groups[this.edit.groupId];
       const preview = this.dialog.querySelector(`[data-edit-preview="${g.id}"] .tr-sentence`);
       if (preview) preview.innerHTML = inlineHTML({ ...g, kept: false, manual: true, draft: this.edit.text });
@@ -733,13 +815,14 @@ export class RevisionUI {
     const g = this.panelRound().groups[this.edit.groupId];
     this.edit.text = proposal({ ...g, kept: false, matches: this.edit.matches, manual: false });
     this.edit.expanded = true;
+    this.storeEdit();
     this.refreshReviewRows(this.panelRound(), [g.id]);
   }
   async finishEdit(text = this.edit.text) {
     const r = this.panelRound(); this.c.target(r);
     const g = r.groups[this.edit.groupId]; g.matches = clone(this.edit.matches); g.manual = false; g.kept = false;
     g.manual = text !== proposal(g); g.draft = text; g.selected = ready(g);
-    this.drafts.delete(this.edit.key); this.edit = null; this.refreshReviewRows(r, [g.id]); this.badge(); await this.c.persistDraft();
+    this.drafts.delete(this.edit.key); this.saveDrafts(); this.edit = null; this.refreshReviewRows(r, [g.id]); this.badge(); await this.c.persistDraft();
   }
   async change(e) {
     const el = e.target;
@@ -753,7 +836,7 @@ export class RevisionUI {
     if (el.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[el.dataset.ruleField] = el.type === 'checkbox' ? el.checked : el.value;
     if (el.id === 'tr-launcher-color') { this.c.settings().launcherColor = el.value; this.launcherTheme(); this.c.saveSettings(); }
     if (el.dataset.scopeToggle) this.scopeDraft[el.dataset.scopeToggle] = el.checked;
-    if (el.id === 'tr-launcher-enabled') { this.c.settings().showLauncher = el.checked; this.badge(); this.c.saveSettings(); }
+    if (el.id === 'tr-launcher-enabled') { this.c.settings().showLauncher = el.checked; this.badge(); this.c.saveSettings(); this.render(); }
     if (el.id === 'tr-plugin-enabled') { this.c.settings().enabled = el.checked; this.c.detectionSequence++; if (!el.checked) this.autoDetection?.cancel(); this.badge(); this.onPluginAvailabilityChange(); this.c.saveSettings(); this.render(); }
     if (el.id === 'tr-palette') { this.c.settings().palette = el.value; this.theme(); this.c.saveSettings(); }
     if (el.id === 'tr-auto') { this.c.settings().autoScan = el.checked; if (!el.checked) this.autoDetection?.cancel(); this.c.saveSettings(); }

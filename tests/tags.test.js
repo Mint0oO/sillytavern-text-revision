@@ -1,7 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { scan, applySelected, DEFAULT_RULES, normalizeScope, proposal } from '../engine.js';
-const run = (text, scope) => scan(text, DEFAULT_RULES, { scope, random: () => 0 });
+import { applySelected, DEFAULT_RULES, normalizeScope, proposal } from '../engine.js';
+import { scanFixture } from './scan-fixture.js';
+const run = (text, scope) => scanFixture(text, DEFAULT_RULES, { scope, random: () => 0 });
 const scope = { extractTags: ['content'], excludeTags: ['status', 'think'] };
 
 test('default scope finds untagged body while keeping only think and thinking excluded', () => {
@@ -59,10 +60,11 @@ test('configured tags normalize names, wrappers and duplicates but reject attrib
   assert.deepEqual(normalizeScope({ extractTags: 'content\n<CONTENT>\n</content>', excludeTags: 'status，options' }), { extractTags: ['content'], excludeTags: ['options', 'status'], excludeRanges: [] });
   assert.throws(() => normalizeScope({ extractTags: '<content id="x">' }), /标签名/);
 });
-test('sentence templates cannot match across excluded sections or markup', () => {
-  const r = run('<content>悲伤像洪水<status>极其</status>一样把他淹没了。</content>', scope);
+test('regex cannot match across excluded sections or markup', () => {
+  const rule = { id: 'simile', kind: 'regex', editorVersion: 1, find: '像[^。]+?一样', values: [], remove: true, action: 'delete' };
+  const r = scanFixture('<content>悲伤像洪水<status>极其</status>一样把他淹没了。</content>', [rule], { scope });
   assert.equal(r.count, 0);
-  const normal = run('<content>悲伤像洪水一样把他淹没了。</content>', scope);
+  const normal = scanFixture('<content>悲伤像洪水一样把他淹没了。</content>', [rule], { scope });
   assert.equal(proposal(normal.groups[0]), '悲伤把他淹没了。');
 });
 test('tag examples inside excluded blocks are opaque and cannot open extraction scopes', () => {

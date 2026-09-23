@@ -1,12 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { sentenceSpans } from '../sentences.js';
-import { scan, DEFAULT_RULES, applySelected, proposal } from '../engine.js';
+import { DEFAULT_RULES, applySelected, proposal } from '../engine.js';
+import { scanFixture as scan } from './scan-fixture.js';
 
 const screenshotSentence = 'Mint两条腿在他胸前乱蹬，企图挣脱那条像铁条一样箍着她双腿的胳膊，“Let me go, you big idiot, I\'m tired!”';
+const simile = { id: 'simile', kind: 'regex', editorVersion: 1, find: '像[^，。]+?一样', values: [], remove: true, action: 'delete' };
 test('screenshot reproduction attaches preceding bracket and final quotation mark to their own sentences', () => {
   const source = '（前一句。） ' + screenshotSentence;
-  const r = scan(source, DEFAULT_RULES);
+  const r = scan(source, [...DEFAULT_RULES, simile]);
   assert.equal(r.groups.length, 1);
   assert.equal(r.groups[0].original, screenshotSentence);
   assert.equal(source.slice(r.groups[0].start, r.groups[0].end), screenshotSentence);
@@ -35,7 +37,7 @@ test('English periods and ellipses split sentences without splitting decimals or
   const source = 'Dr. Smith很累。数值3.14极其准确。"I am 极其 tired." Next极其简短...好了。';
   assert.deepEqual([...sentenceSpans(source)].map(s => s.text), ['Dr. Smith很累。', '数值3.14极其准确。', '"I am 极其 tired."', 'Next极其简短...', '好了。']);
   assert.deepEqual([...sentenceSpans('极其疲惫……下一句。')].map(s => s.text), ['极其疲惫……', '下一句。']);
-  assert.equal(proposal(scan('他像风一样."', DEFAULT_RULES).groups[0]), '他像风一样."');
+  assert.equal(proposal(scan('他像风一样."', [simile]).groups[0]), '他."');
 });
 
 test('orphan closers and whitespace remain untouched outside editable segments', () => {

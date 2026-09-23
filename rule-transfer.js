@@ -1,7 +1,7 @@
 import { validateRule } from './engine.js';
 
 export const RULE_SET_TYPE = 'henge-rule-set';
-export const RULE_SET_FORMAT_VERSION = 1;
+export const RULE_SET_FORMAT_VERSION = 2;
 export const MAX_RULE_SET_BYTES = 25 * 1024 * 1024;
 
 const execution = value => value === 'auto' ? 'auto' : 'review';
@@ -32,10 +32,11 @@ export function parseRuleSet(text) {
   catch (error) { throw new Error(`JSON 格式无效：${error.message}`); }
   if (!data || Array.isArray(data) || typeof data !== 'object') throw new Error('这不是 Henge 规则集对象。');
   if (data.type !== RULE_SET_TYPE) throw new Error('这不是 Henge 导出的规则集。');
-  if (data.formatVersion !== RULE_SET_FORMAT_VERSION) throw new Error(`不支持规则集格式版本 ${String(data.formatVersion)}。`);
+  if (![1, RULE_SET_FORMAT_VERSION].includes(data.formatVersion)) throw new Error(`不支持规则集格式版本 ${String(data.formatVersion)}。`);
   if (!Array.isArray(data.rules)) throw new Error('规则集缺少 rules 数组。');
   if (data.rules.length > 200) throw new Error('规则集最多包含 200 条规则。');
   const rules = data.rules.map((rule, index) => {
+    if (rule?.kind !== 'regex') throw new Error(`第 ${index + 1} 条是旧版字词或占位模板规则；已停止整次导入，请先改写为正则。`);
     try { return validateRule(rule); }
     catch (error) { throw new Error(`第 ${index + 1} 条规则无效：${error.message}`); }
   });

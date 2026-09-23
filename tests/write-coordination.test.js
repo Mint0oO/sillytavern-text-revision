@@ -54,7 +54,7 @@ test('queued writes cannot save to a different chat after a switch', async () =>
   await f.started.promise;
   const queued = f.c.persistDraft(), rejected = assert.rejects(queued,isDetectionCancelled);
   f.ctx.chatId = 'another';
-  f.gate.resolve(); await first; await rejected;
+  f.gate.resolve(); await assert.rejects(first, isDetectionCancelled); await rejected;
   assert.equal(f.writes.length,1);
 });
 

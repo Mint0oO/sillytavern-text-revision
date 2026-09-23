@@ -6,8 +6,7 @@ import { createRuleSet, stringifyRuleSet, parseRuleSet, applyRuleSet, RULE_SET_T
 const regexRule = (find = '极其', values = ['很']) => validateRule({ kind: 'regex', editorVersion: 1, find, values, action: values.length ? 'replace' : 'delete', remove: !values.length, replacementMode: 'candidates', execution: 'inherit' });
 
 test('rule-set JSON contains only portable rules and their shared execution mode', () => {
-  const legacy = validateRule({ kind: 'pattern', find: '不是{A}，而是{B}', captures: { A: { type: 'text' }, B: { type: 'text' } }, values: ['{B}'], action: 'replace' });
-  const settings = { ruleExecution: 'auto', rules: [regexRule(), legacy], theme: 'dark', extractTags: ['content'], secret: 'never export' };
+  const settings = { ruleExecution: 'auto', rules: [regexRule()], theme: 'dark', extractTags: ['content'], secret: 'never export' };
   const data = createRuleSet(settings, new Date('2026-09-06T00:00:00.000Z'));
   assert.deepEqual(Object.keys(data), ['type', 'formatVersion', 'exportedAt', 'ruleExecution', 'rules']);
   assert.equal(data.type, RULE_SET_TYPE);
@@ -21,7 +20,9 @@ test('invalid, foreign, future and oversized rule sets fail before changing sett
   assert.throws(() => parseRuleSet(''), /空/);
   assert.throws(() => parseRuleSet('{'), /JSON 格式无效/);
   assert.throws(() => parseRuleSet('{"type":"other","formatVersion":1,"rules":[]}'), /不是 Henge/);
-  assert.throws(() => parseRuleSet('{"type":"henge-rule-set","formatVersion":2,"rules":[]}'), /不支持/);
+  assert.throws(() => parseRuleSet('{"type":"henge-rule-set","formatVersion":3,"rules":[]}'), /不支持/);
+  assert.throws(() => parseRuleSet('{"type":"henge-rule-set","formatVersion":1,"rules":[{"kind":"pattern","find":"像{A}一样"}]}'), /旧版/);
+  assert.equal(parseRuleSet(JSON.stringify({ type: RULE_SET_TYPE, formatVersion: 1, rules: [regexRule()] })).rules.length, 1);
   const tooMany = JSON.stringify({ type: RULE_SET_TYPE, formatVersion: 1, rules: Array.from({ length: 201 }, () => regexRule()) });
   assert.throws(() => parseRuleSet(tooMany), /最多包含 200/);
   assert.throws(() => parseRuleSet(JSON.stringify({ type: RULE_SET_TYPE, formatVersion: 1, rules: [{ kind: 'regex', find: '[', values: [] }] })), /第 1 条规则无效/);
