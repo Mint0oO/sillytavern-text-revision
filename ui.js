@@ -1,4 +1,4 @@
-import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope } from './engine.js';
+import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, newId } from './engine.js';
 import { clone, chatKey, isDetectionCancelled } from './controller.js';
 import { createRuleDraft, simpleRule } from './rule-editor.js';
 import { renderRulesView, ruleCountText } from './rules-view.js';
@@ -6,11 +6,12 @@ import { scanPrepared } from './scanner.js';
 import { renderRuleForm } from './rule-form.js';
 import { renderSettingsView, executionDescription } from './settings-view.js';
 import { stringifyRuleSet, parseRuleSet, applyRuleSet, MAX_RULE_SET_BYTES } from './rule-transfer.js';
+import { normalizeRuleGroups } from './rule-groups.js';
 
 const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
 const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : name === 'chevron-down' ? '<path d="m6 9 6 6 6-6"/>' : name === 'more' ? '<circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
 const icon = (name, label, attrs) => button(glyph(name), `aria-label="${label}" class="tr-icon" ${attrs}`);
-const dismissActions = new Set(['close', 'cancel-rule', 'cancel-import', 'cancel-scope']);
+const dismissActions = new Set(['close', 'cancel-rule', 'cancel-import', 'cancel-scope', 'cancel-group']);
 
 export function renderChangeLog(log = []) {
   const deleted = [], replaced = [];
@@ -22,9 +23,8 @@ export function renderChangeLog(log = []) {
     while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) { endBefore--; endAfter--; }
     const oldText = before.slice(start, endBefore).join(''), newText = after.slice(start, endAfter).join('');
     if (!oldText && !newText) continue;
-    const details = entry.time || entry.rule ? `<details class="tr-log-provenance"><summary>详情</summary><span>${entry.time ? esc(new Date(entry.time).toLocaleString()) : '时间未记录'} · ${entry.automatic === true ? '自动' : entry.automatic === false ? '手动' : '来源未记录'}${entry.rule ? ` · ${esc(entry.rule)}` : ''}</span></details>` : '';
-    if (!newText) deleted.push(`<div><p class="tr-sentence"><del>${esc(oldText)}</del></p>${details}</div>`);
-    else replaced.push(`<div><p class="tr-sentence">${oldText ? `<del>${esc(oldText)}</del> → ` : ''}<ins>${esc(newText)}</ins></p>${details}</div>`);
+    if (!newText) deleted.push(`<div><p class="tr-sentence"><del>${esc(oldText)}</del></p></div>`);
+    else replaced.push(`<div><p class="tr-sentence">${oldText ? `<del>${esc(oldText)}</del> → ` : ''}<ins>${esc(newText)}</ins></p></div>`);
   }
   if (!deleted.length && !replaced.length) return '';
   return `<details class="tr-change-log tr-change-log-root"><summary>修改日志 · ${deleted.length + replaced.length} 处</summary><div class="tr-change-log-groups">${[['删除', deleted], ['替换', replaced]].map(([label, rows]) => `<details class="tr-change-log"><summary>${label} · ${rows.length} 处</summary>${rows.join('') || '<p class="tr-meta">暂无记录</p>'}</details>`).join('')}</div></details>`;
@@ -42,6 +42,8 @@ export class RevisionUI {
     this.ruleFilters = { search: '' };
     this.ruleDeleteMode = false;
     this.ruleDeleteIds = new Set();
+    this.collapsedRuleGroups = new Set();
+    this.groupId = null;
     this.ruleDrafts = new Map();
     this.ruleOriginal = null;
     this.expandedRoundId = null;
@@ -72,6 +74,21 @@ export class RevisionUI {
       this.ruleOriginal = null;
     });
     this.ruleModal.addEventListener('cancel', e => { e.preventDefault(); this.run(() => this.closeRuleModal()); });
+    this.ruleModal.addEventListener('keydown', e => {
+      if (e.key !== 'Escape') return;
+      const openChoice = this.ruleModal.querySelector('.tr-rule-choice[open]');
+      if (!openChoice) return;
+      e.preventDefault(); e.stopPropagation();
+      openChoice.open = false;
+      openChoice.querySelector('summary')?.focus({ preventScroll: true });
+    });
+    this.groupModal = document.createElement('dialog');
+    this.groupModal.id = 'tr-group-modal';
+    this.groupModal.className = 'tr-submodal';
+    this.groupModal.innerHTML = `<div class="tr-modal-shell"><header class="tr-modal-head"><h3>分组</h3>${icon('xmark', '关闭分组编辑', 'data-action="cancel-group"')}</header><div class="tr-modal-body"></div></div>`;
+    this.dialog.append(this.groupModal);
+    this.groupModal.addEventListener('close', () => { this.groupId = null; this.groupModal.querySelector('.tr-modal-body').innerHTML = ''; });
+    this.groupModal.addEventListener('cancel', e => { e.preventDefault(); this.groupModal.close(); });
     this.importModal = document.createElement('dialog');
     this.importModal.id = 'tr-import-modal';
     this.importModal.className = 'tr-submodal';
@@ -93,7 +110,7 @@ export class RevisionUI {
     });
     this.scopeModal.addEventListener('cancel', e => { e.preventDefault(); this.scopeModal.close(); });
     // Keep subdialog controls scoped to their own event handler.
-    for (const modal of [this.ruleModal, this.importModal, this.scopeModal]) {
+    for (const modal of [this.ruleModal, this.groupModal, this.importModal, this.scopeModal]) {
       modal.addEventListener('click', e => { e.stopPropagation(); this.run(() => this.click(e)); });
       modal.addEventListener('input', e => { e.stopPropagation(); this.input(e); });
       modal.addEventListener('change', e => { e.stopPropagation(); this.run(() => this.change(e)); });
@@ -361,7 +378,7 @@ export class RevisionUI {
     const title = { review: '词句修订', rules: '规则', settings: '设置', extract: '标签提取', exclude: '内容排除', history: '检测记录' }[this.screen];
     const parent = ['extract', 'exclude'].includes(this.screen) ? ['settings', '设置'] : ['review', '修订'];
     const nav = this.screen === 'review' ? button('规则', 'data-screen="rules"') + button('记录', 'data-screen="history"') + button('设置', 'data-screen="settings"') : button(`‹ ${parent[1]}`, `data-screen="${parent[0]}"`);
-    const count = this.screen === 'rules' ? `<span class="tr-head-count">${ruleCountText(this.c.settings().rules)}</span>` : '';
+    const count = this.screen === 'rules' ? `<span class="tr-head-count">${ruleCountText(this.c.settings().rules, this.c.settings().ruleGroups)}</span>` : '';
     this.dialog.querySelector('.tr-head').innerHTML = `<div class="tr-head-title"><h2>${title}</h2>${count}</div><nav>${nav}${icon('xmark', '关闭修订面板', 'data-action="close"')}</nav>`;
     this.dialog.querySelector('.tr-foot').innerHTML = '';
     const draw = { review: 'review', rules: 'rulesView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
@@ -415,7 +432,7 @@ export class RevisionUI {
     const editing = this.edit?.groupId === g.id && this.edit.roundId === this.panelRound()?.id && editable;
     const selected = g.selected && ready(g);
     const preview = editing ? inlineHTML({ ...g, kept: false, manual: true, draft: this.edit.text }) : inlineHTML(g);
-    const state = !editing && (g.kept || g.matches.every(m => m.done) && !ready(g)) ? `<span class="tr-row-state">${g.kept ? '已保留' : '已应用'}</span>` : '';
+    const state = !editing && (g.kept || g.matches.every(m => m.done) && !ready(g)) ? (g.kept ? '已保留' : '已应用') : '';
     const content = editable && ready(g) && !editing
       ? button(`<span class="tr-sentence">${preview}</span>`, `class="tr-row-toggle" data-toggle="${g.id}" aria-pressed="${selected}" aria-label="${selected ? '取消选择' : '选择'}第${g.id + 1}字段：${esc(proposal(g))}"`)
       : `<div class="tr-row-text ${editing ? 'tr-edit-preview' : ''}" ${editing ? `data-edit-preview="${g.id}"` : ''}><p class="tr-sentence">${preview}</p></div>`;
@@ -425,7 +442,7 @@ export class RevisionUI {
       editor = `<div class="tr-inline-editor"><label class="tr-edit-field"><span class="tr-label">修改后</span><textarea id="tr-edit" aria-label="编辑整句" rows="3">${esc(d.text)}</textarea></label><details class="tr-candidates" ${d.expanded ? 'open' : ''}><summary>替换候选</summary>${d.matches.filter(m => m.options.length || m.remove).map(m => `<div class="tr-candidate"><label for="tr-option-${m.id}">${esc(m.old)}</label><div class="tr-replace">${m.options.length ? `<select id="tr-option-${m.id}" data-option="${m.id}"><option value="" disabled ${m.value === null || m.value === '' ? 'selected' : ''}>替换为…</option>${m.options.map((v, i) => `<option value="${i}" ${m.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>${m.options.length > 1 ? button('换一个', `data-random="${m.id}"`) : ''}` : '<span class="tr-meta">未设置替换词</span>'}</div>${button('删除', `class="tr-delete" data-delete-match="${m.id}" aria-pressed="${m.value === ''}"`)}</div>`).join('') || '<p class="tr-meta">请直接编辑整句。</p>'}</details><div class="tr-edit-actions"><div>${button('不改这句', `data-keep="${g.id}"`)}${button('删除整句', 'class="tr-delete-sentence" data-action="delete-sentence"')}</div><div>${button('取消', 'data-action="cancel-edit"')}${button('完成', 'class="tr-primary" data-action="finish-edit"')}</div></div></div>`;
     }
     const actions = editable && !editing ? `<div class="tr-row-actions">${icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`)}<button type="button" class="tr-icon tr-more" aria-label="展开第${g.id + 1}句快捷操作" aria-expanded="false" data-quick-toggle="${g.id}">${glyph('more')}</button><div class="tr-quick-menu" data-quick-menu="${g.id}" hidden><button type="button" data-quick="restore" data-quick-group="${g.id}">恢复</button><button type="button" class="tr-delete" data-quick="delete" data-quick-group="${g.id}">删除</button></div></div>` : '';
-    return `<section data-group="${g.id}" class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state ? 'tr-row-has-state' : ''}">${content}${state}${actions}${editor}</section>`;
+    return `<section data-group="${g.id}" class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state === '已应用' ? 'tr-state-applied' : state === '已保留' ? 'tr-state-kept' : ''}">${content}${state ? `<span class="tr-sr-only">${state}</span>` : ''}${actions}${editor}</section>`;
   }
   refreshReviewRows(r, ids) {
     const editable = this.c.editable(r), rows = this.selectionState(r);
@@ -459,7 +476,8 @@ export class RevisionUI {
     }
   }
   rulesView() {
-    this.body(renderRulesView(this.c.settings().rules, this.ruleFilters, this.c.settings().ruleExecution, { active: this.ruleDeleteMode, selectedIds: this.ruleDeleteIds }, this.c.settings()));
+    const settings = this.c.settings();
+    this.body(renderRulesView(settings.rules, this.ruleFilters, settings.ruleExecution, { active: this.ruleDeleteMode, selectedIds: this.ruleDeleteIds }, { ...settings, collapsedRuleGroups: this.collapsedRuleGroups }));
     if (this.ruleDeleteMode) {
       const count = this.ruleDeleteIds.size;
       this.dialog.querySelector('.tr-foot').innerHTML = `<span class="tr-meta">${count ? `已选择 ${count} 条规则` : '请选择一条或多条规则'}</span><div>${button('取消', 'data-action="cancel-rule-delete"')}${button(`确定删除${count ? ` ${count}` : ''}`, `data-action="confirm-rule-delete" ${count ? '' : 'disabled'}`)}</div>`;
@@ -491,14 +509,16 @@ export class RevisionUI {
     this.ruleImport = imported;
     const mode = imported.ruleExecution === 'auto' ? '自动应用' : '人工审查';
     const examples = imported.rules.slice(0, 5).map(rule => `<li>${esc(rule.find)}</li>`).join('');
-    this.importModal.querySelector('.tr-modal-body').innerHTML = `<p><strong>${esc(file.name)}</strong></p><p>共 ${imported.rules.length} 条规则 · 处理方式：${mode}</p>${examples ? `<ul class="tr-import-list">${examples}</ul>${imported.rules.length > 5 ? `<p class="tr-meta">另有 ${imported.rules.length - 5} 条规则未在这里展开。</p>` : ''}` : '<p class="tr-meta">这是一个空规则集。</p>'}<p class="tr-meta">追加：保留现有规则和当前处理方式，跳过重复规则。<br>替换全部：清除现有规则，并采用文件中的处理方式。</p><div class="tr-form-actions"><button type="button" data-action="cancel-import">取消</button><button type="button" data-action="import-append" ${imported.rules.length ? '' : 'disabled'}>追加</button><button type="button" class="tr-primary" data-action="import-replace">替换全部</button></div>`;
+    const migration = imported.priorityMigration.length > 1 ? `<div class="tr-save-pending">旧规则中的 ${imported.priorityMigration.join('、')} 等数字优先级会归为“高”，不同旧数字之间的顺序可能变化。受影响规则：${imported.priorityMigrationRules.slice(0, 5).map(rule => esc(rule.find)).join('、')}${imported.priorityMigrationRules.length > 5 ? `等 ${imported.priorityMigrationRules.length} 条` : ''}。导入后可逐条调整。</div>` : '';
+    this.importModal.querySelector('.tr-modal-body').innerHTML = `<p><strong>${esc(file.name)}</strong></p><p>共 ${imported.rules.length} 条规则、${imported.groups.length} 个分组 · 处理方式：${mode}</p>${migration}${examples ? `<ul class="tr-import-list">${examples}</ul>${imported.rules.length > 5 ? `<p class="tr-meta">另有 ${imported.rules.length - 5} 条规则未在这里展开。</p>` : ''}` : '<p class="tr-meta">这是一个空规则集。</p>'}<p class="tr-meta">追加：保留现有规则、分组开关和当前处理方式，同名分组会合并，跳过重复规则。<br>替换全部：清除现有规则和分组，并采用文件中的处理方式。</p><div class="tr-form-actions"><button type="button" data-action="cancel-import">取消</button><button type="button" data-action="import-append" ${imported.rules.length || imported.groups.length ? '' : 'disabled'}>追加</button><button type="button" class="tr-primary" data-action="import-replace">替换全部</button></div>`;
     if (!this.importModal.open) this.importModal.showModal();
   }
   importRules(mode) {
     if (!this.ruleImport) throw new Error('请重新选择要导入的 JSON 文件。');
     const settings = this.c.settings();
-    const result = applyRuleSet(settings.rules, this.ruleImport, mode);
+    const result = applyRuleSet(settings.rules, this.ruleImport, mode, settings.ruleGroups);
     settings.rules = result.rules;
+    settings.ruleGroups = result.groups;
     if (result.ruleExecution) settings.ruleExecution = result.ruleExecution;
     this.c.saveSettings();
     this.ruleId = null;
@@ -514,7 +534,7 @@ export class RevisionUI {
     const draft = this.ruleDrafts.get(ruleId);
     this.ruleOriginal = JSON.stringify(draft);
     this.ruleModal.querySelector('h3').textContent = ruleId === 'new' ? '新建规则' : '编辑规则';
-    this.ruleModal.querySelector('.tr-modal-body').innerHTML = renderRuleForm(draft, { canDelete: ruleId !== 'new' });
+    this.ruleModal.querySelector('.tr-modal-body').innerHTML = renderRuleForm(draft, { canDelete: ruleId !== 'new', groups: this.c.settings().ruleGroups });
     if (!this.ruleModal.open) this.ruleModal.showModal();
     // Do not summon the phone keyboard just by opening an existing rule.
     const focus = matchMedia('(pointer:coarse)').matches ? '[data-action="cancel-rule"]' : '#tr-find';
@@ -525,6 +545,14 @@ export class RevisionUI {
     const changed = draft && this.ruleOriginal !== null && JSON.stringify(draft) !== this.ruleOriginal;
     if (!force && changed && !globalThis.confirm('这条规则还有未保存的修改，确定放弃吗？')) return;
     this.ruleModal.close();
+  }
+  openGroupModal(groupId = null) {
+    this.groupId = groupId;
+    const group = this.c.settings().ruleGroups.find(item => item.id === groupId);
+    this.groupModal.querySelector('h3').textContent = group ? '编辑分组' : '新建分组';
+    this.groupModal.querySelector('.tr-modal-body').innerHTML = `<form id="tr-group-form" class="tr-rule-editor"><label class="tr-field">分组名称<input id="tr-group-name" required maxlength="40" value="${esc(group?.name ?? '')}" autocomplete="off"></label><div class="tr-form-actions">${button('取消', 'data-action="cancel-group"')}<button type="submit" class="tr-primary">保存分组</button></div></form>`;
+    if (!this.groupModal.open) this.groupModal.showModal();
+    this.groupModal.querySelector('#tr-group-name')?.focus({ preventScroll: true });
   }
   draftRule() {
     return simpleRule(this.ruleDrafts.get(this.ruleId), this.c.settings().rules.find(r => r.id === this.ruleId));
@@ -604,17 +632,61 @@ export class RevisionUI {
     if (e.button === 0 && (dismissActions.has(b?.dataset.action) || b?.dataset.action === 'clear-rule-search')) e.preventDefault();
   }
   async click(e) {
+    const choiceSummary = e.target.closest('.tr-rule-choice-summary');
+    if (choiceSummary?.classList?.contains('tr-rule-choice-summary')) {
+      e.preventDefault();
+      const selectedChoice = choiceSummary.parentElement;
+      const opening = !selectedChoice.open;
+      this.ruleModal.querySelectorAll('.tr-rule-choice[open]').forEach(choice => {
+        choice.open = false;
+      });
+      selectedChoice.classList.remove('tr-choice-up');
+      selectedChoice.open = opening;
+      if (opening) {
+        const boundary = selectedChoice.closest('.tr-modal-body').getBoundingClientRect();
+        const trigger = choiceSummary.getBoundingClientRect();
+        const below = boundary.bottom - trigger.bottom, above = trigger.top - boundary.top;
+        const menu = selectedChoice.querySelector('.tr-rule-choice-options');
+        const openUp = below + 8 < menu.getBoundingClientRect().height && above > below;
+        if (openUp) selectedChoice.classList.add('tr-choice-up');
+        selectedChoice.style.setProperty('--tr-choice-space', `${Math.max(44, Math.floor((openUp ? above : below) + 2))}px`);
+      }
+      return;
+    }
     const b = e.target.closest('button');
     if (!b || b.disabled || b.type === 'submit') return;
     const data = b.dataset;
+    if (data.ruleChoiceValue !== undefined) {
+      const choice = b.closest('[data-rule-choice]');
+      if (!choice || !this.ruleDrafts.has(this.ruleId)) return;
+      const field = choice.dataset.ruleChoice;
+      this.ruleDrafts.get(this.ruleId)[field] = field === 'priorityLevel' ? Number(data.ruleChoiceValue) : data.ruleChoiceValue;
+      choice.querySelectorAll('[data-rule-choice-value]').forEach(option => option.setAttribute('aria-pressed', String(option === b)));
+      const summary = choice.querySelector('summary');
+      summary.querySelector('.tr-rule-choice-current').textContent = b.textContent;
+      summary.setAttribute('aria-label', `${choice.parentElement.querySelector('.tr-rule-choice-label').textContent}：${b.textContent}`);
+      choice.open = false;
+      summary.focus({ preventScroll: true });
+      const preview = this.ruleModal.querySelector('#tr-rule-preview');
+      if (preview) preview.textContent = '';
+      return;
+    }
     if (data.action === 'close') { this.dialog.close(); return; }
     if (data.action === 'cancel-rule' && this.ruleModal.open) { this.closeRuleModal(); return; }
+    if (data.action === 'cancel-group' && this.groupModal.open) { this.groupModal.close(); return; }
     if (data.action === 'cancel-import') { this.importModal.close(); return; }
     if (data.action === 'cancel-scope') { this.scopeModal.close(); return; }
     if (this.c.busy && !data.screen) return;
     if (data.action === 'clear-rule-search') {
       this.ruleFilters.search = ''; this.render();
       this.dialog.querySelector('[data-rule-filter="search"]')?.focus({ preventScroll: true });
+      return;
+    }
+    if (data.groupCollapse !== undefined) {
+      if (this.collapsedRuleGroups.has(data.groupCollapse)) this.collapsedRuleGroups.delete(data.groupCollapse);
+      else this.collapsedRuleGroups.add(data.groupCollapse);
+      this.render();
+      this.dialog.querySelector(`[data-group-collapse="${CSS.escape(data.groupCollapse)}"]`)?.focus({ preventScroll: true });
       return;
     }
     if (data.toggle !== undefined) {
@@ -729,6 +801,19 @@ export class RevisionUI {
         break;
       }
       case 'finish-review': await this.c.finishReview(this.panelRound()); this.say('本轮已完成，未应用的内容保留，不再提醒。'); break;
+      case 'new-group':
+        if (this.c.settings().ruleGroups.length >= 50) throw new Error('分组最多 50 个。');
+        this.openGroupModal(); break;
+      case 'edit-group': this.openGroupModal(data.groupId); break;
+      case 'delete-group': {
+        const settings = this.c.settings(), group = settings.ruleGroups.find(item => item.id === data.groupId);
+        if (!group || !globalThis.confirm(`删除分组“${group.name}”？组内规则会移到“未分组”。`)) break;
+        settings.rules = settings.rules.map(rule => rule.groupId === group.id ? { ...rule, groupId: null } : rule);
+        settings.ruleGroups = settings.ruleGroups.filter(item => item.id !== group.id);
+        this.collapsedRuleGroups.delete(group.id);
+        this.c.saveSettings(); this.render(); this.say('分组已删除，组内规则已移到“未分组”。重新检测后生效。'); break;
+      }
+      case 'dismiss-priority-notice': delete this.c.settings().priorityMigrationNotice; this.c.saveSettings(); this.render(); break;
       case 'begin-rule-delete': this.ruleDeleteMode = true; this.ruleDeleteIds.clear(); this.say(''); this.render(); break;
       case 'cancel-rule-delete': this.ruleDeleteMode = false; this.ruleDeleteIds.clear(); this.say(''); this.render(); break;
       case 'confirm-rule-delete': {
@@ -856,6 +941,13 @@ export class RevisionUI {
       this.c.saveSettings(); this.render();
       this.dialog.querySelector(`[data-rule-enabled="${CSS.escape(el.dataset.ruleEnabled)}"]`)?.focus({ preventScroll: true });
     }
+    if (el.dataset.groupEnabled !== undefined) {
+      const group = this.c.settings().ruleGroups.find(item => item.id === el.dataset.groupEnabled);
+      if (!group) throw new Error('分组已不存在，请重新打开规则页。');
+      group.enabled = el.checked;
+      this.c.saveSettings(); this.render();
+      this.dialog.querySelector(`[data-group-enabled="${CSS.escape(group.id)}"]`)?.focus({ preventScroll: true });
+    }
     if (el.id === 'tr-appearance') { this.c.settings().appearance = el.value; this.theme(); this.c.saveSettings(); }
     if (el.hasAttribute('data-all')) {
       const r = this.panelRound();
@@ -865,9 +957,19 @@ export class RevisionUI {
     if (el.dataset.option !== undefined) { const m = this.edit.matches.find(m => m.id === Number(el.dataset.option)); m.value = m.options[Number(el.value)]; this.refreshEditor(); }
   }
   submit(e) {
+    if (e.target.id === 'tr-group-form') {
+      const settings = this.c.settings(), name = this.groupModal.querySelector('#tr-group-name')?.value.trim();
+      const current = settings.ruleGroups.find(item => item.id === this.groupId);
+      const updated = current ? settings.ruleGroups.map(item => item.id === current.id ? { ...item, name } : item)
+        : [...settings.ruleGroups, { id: newId(), name, enabled: true }];
+      settings.ruleGroups = normalizeRuleGroups(updated);
+      this.c.saveSettings(); this.groupModal.close(); this.render(); this.say('分组已保存，重新检测后生效。');
+      return;
+    }
     if (e.target.id !== 'tr-rule-form') return;
     const old = this.c.settings().rules.find(r => r.id === this.ruleId);
     const rule = this.draftRule();
+    if (rule.groupId && !this.c.settings().ruleGroups.some(group => group.id === rule.groupId)) throw new Error('所属分组已不存在，请重新选择。');
     const rules = this.c.settings().rules;
     const signature = r => { const { id, enabled, ...content } = validateRule(r); return JSON.stringify(content); };
     if (rules.some(r => r.id !== rule.id && signature(r) === signature(rule))) throw new Error('已经有完全相同的规则。');

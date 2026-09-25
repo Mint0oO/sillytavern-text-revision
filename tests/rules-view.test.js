@@ -33,8 +33,7 @@ test('rules stay compact and expose modal editing controls', () => {
   assert.match(collapsed, /自动检测，人工审查/);
   assert.doesNotMatch(collapsed, /data-screen="settings"|处理方式：/);
   assert.doesNotMatch(collapsed, /<select/);
-  assert.doesNotMatch(collapsed, /已启用 1 \/ 1/);
-  assert.equal(ruleCountText([rule]), '已启用 1 / 1');
+  assert.equal(ruleCountText([rule]), '生效 1 / 1');
   assert.match(collapsed, /placeholder="搜索"/);
   assert.match(collapsed, new RegExp(`title="${find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`));
   assert.doesNotMatch(collapsed, />不是\(\[\^/);
@@ -59,7 +58,30 @@ test('rule counter reports enabled rules rather than search matches', () => {
     { id: 'two', kind: 'regex', editorVersion: 1, find: '极具', values: ['很有'], action: 'replace', enabled: true },
   ];
   renderRulesView(rules, { search: '极其' }, 'review');
-  assert.equal(ruleCountText(rules), '已启用 1 / 2');
+  assert.equal(ruleCountText(rules), '生效 1 / 2');
+});
+
+test('group switch changes effective counts without changing rule switches', () => {
+  const rules = [
+    { id: 'one', kind: 'regex', find: '极其', values: [], action: 'delete', enabled: true, groupId: 'style', priorityLevel: 1 },
+    { id: 'two', kind: 'regex', find: '极具', values: [], action: 'delete', enabled: false, groupId: 'style', priorityLevel: 3 },
+    { id: 'three', kind: 'regex', find: '极度', values: [], action: 'delete', enabled: true },
+  ];
+  const groups = [{ id: 'style', name: '描写', enabled: false }];
+  const html = renderRulesView(rules, { search: '' }, 'review', {}, { ruleGroups: groups });
+  assert.equal(ruleCountText(rules, groups), '生效 1 / 3');
+  assert.match(html, /data-group-enabled="style"/);
+  assert.match(html, /高 · 删除/);
+  assert.match(html, /低 · 删除/);
+  assert.match(html, /描写/);
+  assert.ok(html.indexOf('data-action="new-group"') < html.indexOf('data-action="begin-rule-delete"'), 'new group shares the top toolbar before the rule actions');
+  assert.doesNotMatch(html, /tr-group-toolbar/);
+  const collapsed = renderRulesView(rules, { search: '' }, 'review', {}, { ruleGroups: groups, collapsedRuleGroups: new Set(['style']) });
+  assert.match(collapsed, /class="tr-group-chevron tr-chevron-closed"/);
+  assert.match(html, /class="tr-group-chevron "[^>]*><path d="m6 9 6 6 6-6"/);
+  assert.match(collapsed, /<path d="m6 9 6 6 6-6"/);
+  assert.match(collapsed, /data-group-collapse="style" aria-expanded="false"/);
+  assert.equal(rules[0].enabled, true, 'closing a group must retain its members’ switches');
 });
 
 test('rules status distinguishes automatic triggering, execution and disabled plugin', () => {

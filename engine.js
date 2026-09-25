@@ -1,7 +1,8 @@
 // Pure text operations: no chat access, network requests, or DOM writes.
 import { revisionSpans } from './sentences.js';
 import { parseRegexes, replacementParts } from './regex-support.js';
-export const ENGINE_VERSION = 9;
+import { priorityLevel } from './rule-groups.js';
+export const ENGINE_VERSION = 10;
 export const DEFAULT_RULES = [
   { id: 'very', find: '极其', kind: 'regex', editorVersion: 1, values: [], remove: true, action: 'delete', enabled: true, execution: 'inherit' },
   { id: 'possess', find: '极具', kind: 'regex', editorVersion: 1, values: ['很有', '有'], remove: false, action: 'replace', enabled: true, execution: 'inherit' },
@@ -48,12 +49,13 @@ export function validateRule(rule) {
   const action = ['delete', 'replace', 'review'].includes(rule.action) ? rule.action : remove ? 'delete' : values.length ? 'replace' : 'review';
   if (action === 'delete' && !remove) throw new Error('默认删除需要先开启“允许删除”。');
   if (action === 'replace' && !values.length) throw new Error('默认替换需要至少一个替换候选。');
-  const priority = Number(rule.priority ?? 0);
-  if (!Number.isInteger(priority) || priority < 0 || priority > 100) throw new Error('优先级需要是 0–100 的整数，数字越大越优先。');
+  const level = priorityLevel(rule);
+  const groupId = rule.groupId == null || rule.groupId === '' ? null : String(rule.groupId);
+  if (groupId && groupId.length > 80) throw new Error('规则所属分组编号过长。');
   return { id: String(rule.id || newId()), find, kind: 'regex', values, remove, action, enabled: rule.enabled !== false,
     editorVersion: 1, replacementMode: rule.replacementMode === 'text' ? 'text' : 'candidates',
     execution: rule.editorVersion === 1 && rule.execution === 'inherit' ? 'inherit' : rule.execution === 'auto' && action !== 'review' ? 'auto' : 'review',
-    priority };
+    priorityLevel: level, groupId };
 }
 
 export const DEFAULT_EXCLUDE_TAGS = ['think', 'thinking'];
@@ -239,10 +241,10 @@ function resolveOverlaps(found, sentence, random) {
       continue;
     }
 
-    // Higher priority wins incompatible overlaps. Equal-priority candidates
+    // Lower level numbers win incompatible overlaps. Equal-level candidates
     // are shuffled once per scan; the resulting coherent set stays stable.
     const ranked = component.map(match => ({ match, tie: random() }))
-      .sort((a, b) => b.match.priority - a.match.priority || a.tie - b.tie);
+      .sort((a, b) => a.match.priorityLevel - b.match.priorityLevel || a.tie - b.tie);
     const accepted = [];
     for (const { match } of ranked) {
       if (!accepted.some(other => overlaps(match, other) && !(match.action === 'delete' && other.action === 'delete'))) accepted.push(match);
@@ -280,7 +282,7 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
         const choice = rule.action === 'delete' ? '' : rule.action === 'replace' ? values[Math.min(values.length - 1, Math.floor(random() * values.length))] : null;
         if (choice === m[0]) continue;
         const coreEnd = m.index + m[0].length;
-        found.push({ start: m.index, end: coreEnd, coreEnd, old: m[0], trailing: '', reviewAtEnd: false, priority: rule.priority, ruleId: rule.id, ruleFind: rule.find, action: rule.action, execution: rule.execution, resolved: true, captures: m.captures ?? {}, options: values, remove: rule.remove, value: choice, generic: false, reason: '', done: false });
+        found.push({ start: m.index, end: coreEnd, coreEnd, old: m[0], trailing: '', reviewAtEnd: false, priorityLevel: rule.priorityLevel, ruleId: rule.id, ruleFind: rule.find, action: rule.action, execution: rule.execution, resolved: true, captures: m.captures ?? {}, options: values, remove: rule.remove, value: choice, generic: false, reason: '', done: false });
         if (found.length > LIMITS.matches) throw new Error('匹配过多，请缩小规则范围后重试。');
       }
     }

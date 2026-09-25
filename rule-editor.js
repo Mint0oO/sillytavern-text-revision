@@ -1,5 +1,6 @@
 import { validateRule, formatRuleValues, parseRuleValues } from './engine.js';
 import { parseRegex } from './regex-support.js';
+import { priorityLevel } from './rule-groups.js';
 
 export function isLegacyRule(rule) {
   return rule && (rule.kind !== 'regex' || rule.captures && Object.keys(rule.captures).length
@@ -17,14 +18,16 @@ export function createRuleDraft(rule) {
   }
   const wholeReplacement = rule?.replacementMode === 'text';
   let values = rule?.action === 'delete' ? [] : rule?.values ?? [];
-  return { find, valuesText: wholeReplacement ? values.join('') : formatRuleValues(values), wholeReplacement, sample: '' };
+  return { find, valuesText: wholeReplacement ? values.join('') : formatRuleValues(values), wholeReplacement,
+    priorityLevel: priorityLevel(rule), groupId: rule?.groupId ?? '', sample: '' };
 }
 
 export function simpleRule(draft, old) {
   const values = draft.wholeReplacement ? (draft.valuesText.length ? [draft.valuesText] : []) : parseRuleValues(draft.valuesText);
   return validateRule({ id: old?.id, enabled: old?.enabled ?? true, kind: 'regex', editorVersion: 1,
     find: draft.find, values, action: values.length ? 'replace' : 'delete', remove: !values.length,
-    replacementMode: draft.wholeReplacement ? 'text' : 'candidates', execution: 'inherit', priority: old?.priority ?? 0 });
+    replacementMode: draft.wholeReplacement ? 'text' : 'candidates', execution: 'inherit',
+    priorityLevel: draft.priorityLevel ?? priorityLevel(old), groupId: draft.groupId ?? old?.groupId ?? null });
 }
 
 // One column deletes; a second column supplies replacement candidates.

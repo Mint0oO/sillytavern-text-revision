@@ -1,6 +1,7 @@
 import { DEFAULT_RULES, DEFAULT_EXCLUDE_TAGS, ENGINE_VERSION, applySelected, rebuild, ready, newId, normalizeScope, scopeKey } from './engine.js';
 import { scanPrepared } from './scanner.js';
 import { HISTORY_FORMAT_VERSION, compactRound, boundHistory, migrateRounds, upsertRound, restoreBase, restoreUndoGroups, textKey } from './history-store.js';
+import { effectiveRules, legacyPriorityValues, legacyPriorityRules, migrateRulePriorities } from './rule-groups.js';
 
 export const KEY = 'text_revision';
 export const clone = value => structuredClone(value);
@@ -8,7 +9,7 @@ export const chatKey = c => JSON.stringify([c.groupId ?? null, c.characterId ?? 
 export const swipeId = m => m.swipe_id ?? 0;
 export const isReply = m => m && !m.is_user && !m.is_system && typeof m.mes === 'string' && m.mes.trim();
 const rulesKey = settings => {
-  const input = JSON.stringify([settings.enabled !== false, settings.ruleExecution ?? 'review', settings.rules]);
+  const input = JSON.stringify([settings.enabled !== false, settings.ruleExecution ?? 'review', settings.rules, settings.ruleGroups]);
   let hash = 0xcbf29ce484222325n;
   for (let i = 0; i < input.length; i++) hash = BigInt.asUintN(64, (hash ^ BigInt(input.charCodeAt(i))) * 0x100000001b3n);
   return `${input.length}:${hash.toString(16)}`;
@@ -41,6 +42,15 @@ export class RevisionController {
     const s = c.extensionSettings[KEY];
     if (s.rules == null) {
       s.rules = clone(DEFAULT_RULES);
+    }
+    s.ruleGroups ??= [];
+    if (!s.priorityLevelVersion) {
+      const legacy = legacyPriorityValues(s.rules);
+      const affected = legacyPriorityRules(s.rules);
+      s.rules = migrateRulePriorities(s.rules);
+      s.priorityLevelVersion = 1;
+      if (legacy.length > 1) s.priorityMigrationNotice = { values: legacy, rules: affected };
+      c.saveSettingsDebounced?.();
     }
     s.theme ??= 'light';
     s.appearance ??= 'minimal';
@@ -199,7 +209,7 @@ export class RevisionController {
       if (signal?.aborted || sequence !== this.detectionSequence || this.detectionTasks.get(m) !== task) throw new DetectionCancelledError();
     };
     checkCancelled();
-    const settings = this.settings(), rules = clone(settings.rules), scope = normalizeScope(settings);
+    const settings = this.settings(), rules = clone(effectiveRules(settings.rules, settings.ruleGroups)), scope = normalizeScope(settings);
     const snapshot = { key: chatKey(c), target: this.captureTarget(messageId), text: m.mes, swipe: swipeId(m), rules: rulesKey(settings) };
     const history = this.history();
     const previous = history.findLast(r => r.messageUid === m.extra?.[KEY]?.id && r.swipeId === swipeId(m));

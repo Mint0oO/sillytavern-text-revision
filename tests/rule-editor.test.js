@@ -95,7 +95,7 @@ test('retired rules cannot be silently edited into a different regex', () => {
   const current = validateRule({ kind: 'regex', find: '甲,乙', values: ['轻轻, 缓缓'], action: 'replace', enabled: false, priority: 10 });
   const saved = simpleRule(createRuleDraft(current), current);
   assert.equal(saved.enabled, false);
-  assert.equal(saved.priority, 10);
+  assert.equal(saved.priorityLevel, 1);
   assert.deepEqual(saved.values, ['轻轻, 缓缓']);
 });
 
@@ -112,7 +112,11 @@ test('form has always-visible find/replacement without template or action settin
   const html = renderRuleForm(createRuleDraft());
   assert.match(html, /data-rule-field="find"/);
   assert.match(html, /data-rule-field="valuesText"/);
-  assert.doesNotMatch(html, /data-rule-field="(?:mode|action|category|priority|execution|captures|before|boundary|punctuation)"/);
+  assert.match(html, /data-rule-choice="priorityLevel"/);
+  assert.match(html, /data-rule-choice="groupId"/);
+  assert.match(html, /data-rule-choice-value="2" aria-label="中" aria-pressed="true">中<\/button>/);
+  assert.match(html, /tr-rule-choice-options/);
+  assert.doesNotMatch(html, /data-rule-field="(?:mode|action|category|execution|captures|before|boundary|punctuation)"/);
   assert.doesNotMatch(html, /单个形容词|附加条件|句式助手|wholeReplacement|整段替换|写法示例|>测试文字</);
   assert.match(html, /留空为删除/);
   assert.doesNotMatch(html, /data-action="cancel-rule"|删除此规则/);

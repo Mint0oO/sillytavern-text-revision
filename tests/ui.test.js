@@ -133,7 +133,7 @@ test('compact logs group changed text, escape markup and preserve the stored ori
   assert.match(html, /<del>极具<\/del> → <ins>很有<\/ins>/);
   assert.match(html, /<del>😀<\/del> → <ins>😁<\/ins>/);
   assert.match(html, /&lt;x&gt;/);
-  assert.match(html, /very-long-regex|another-regex/);
+  assert.doesNotMatch(html, /详情|very-long-regex|another-regex/);
   assert.doesNotMatch(html, /<p class="tr-sentence">他|<p class="tr-sentence">她|原样/);
   assert.equal(JSON.stringify(log), original);
   assert.equal(renderChangeLog([]), '');
@@ -182,6 +182,16 @@ test('editable rows expose one-line pencil actions and an adjacent restore/delet
   assert.match(html, />恢复<\/button>/);
   assert.match(html, /data-quick="delete"/);
   assert.match(html, />删除<\/button>/);
+});
+
+test('completed rows use right-edge states without a visible status badge', () => {
+  const ui = Object.assign(Object.create(RevisionUI.prototype), { edit: null, panelRound: () => ({ id: 'round' }) });
+  const group = { id: 0, original: '原句', applied: '新句', matches: [{ id: 1, start: 0, end: 1, old: '原', value: '新', options: [], done: true }], selected: false, kept: false, manual: false };
+  const applied = ui.row(group, false), kept = ui.row({ ...group, kept: true }, false);
+  assert.match(applied, /tr-state-applied/);
+  assert.match(kept, /tr-state-kept/);
+  assert.match(applied, /class="tr-sr-only">已应用<\/span>/);
+  assert.doesNotMatch(applied + kept, /tr-row-state|tr-row-has-state/);
 });
 
 test('quick restore and delete actions update the pending group and persist the draft', async () => {

@@ -24,8 +24,10 @@ test('manual sentence editing cannot change neighboring text', () => {
 test('overlapping regex deletions combine and replacement conflicts use priority', () => {
   let round = scanFixture('甲乙丙。', [rule('outer', '甲乙'), rule('inner', '乙')]);
   assert.equal(proposal(round.groups[0]), '丙。');
-  round = scanFixture('甲乙。', [rule('remove', '甲乙'), { ...rule('replace', '乙', ['新']), priority: 10 }], { random: () => 0 });
+  round = scanFixture('甲乙。', [rule('remove', '甲乙'), { ...rule('replace', '乙', ['新']), priorityLevel: 1 }], { random: () => 0 });
   assert.equal(proposal(round.groups[0]), '甲新。');
+  round = scanFixture('甲乙丙。', [{ ...rule('high', '甲乙', ['新']), priorityLevel: 1 }, { ...rule('low', '乙', ['旧']), priorityLevel: 3 }, rule('separate', '丙', ['好'])], { random: () => 0 });
+  assert.equal(proposal(round.groups[0]), '新好。', 'only conflicting overlaps use the level');
 });
 
 test('candidate choice is stable within a round and HTML preview is escaped', () => {
@@ -38,7 +40,9 @@ test('candidate choice is stable within a round and HTML preview is escaped', ()
 test('legacy rule shapes are rejected while capture replacement and priority remain supported', () => {
   assert.throws(() => validateRule({ kind: 'pattern', find: '像{A}一样' }), /旧版/);
   assert.throws(() => validateRule({ kind: 'regex', find: '极其', before: ['不'] }), /旧版/);
-  assert.equal(validateRule({ kind: 'regex', find: '/(冷)冷/g', values: ['$1'], action: 'replace', priority: 10 }).priority, 10);
+  assert.equal(validateRule({ kind: 'regex', find: '/(冷)冷/g', values: ['$1'], action: 'replace', priority: 10 }).priorityLevel, 1);
+  assert.equal(validateRule({ kind: 'regex', find: '冷', values: [], remove: true, priority: 0 }).priorityLevel, 2);
+  assert.throws(() => validateRule({ kind: 'regex', find: '冷', values: [], remove: true, priorityLevel: 4 }), /高、中或低/);
 });
 
 test('CSV candidate quoting stays lossless', () => {

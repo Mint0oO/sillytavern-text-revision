@@ -20,6 +20,33 @@ test('fresh settings use simple regex rules without legacy template controls', (
   assert.ok(settings.rules.every(r => r.editorVersion === 1 && r.kind === 'regex' && r.execution === 'inherit'));
 });
 
+test('group switch excludes its rules and reopening restores individual rule choices', async () => {
+  const f = fixture(), settings = f.ctl.settings();
+  settings.rules = [validateRule({ id: 'grouped', kind: 'regex', find: '极其', remove: true, action: 'delete', groupId: 'g', enabled: true })];
+  settings.ruleGroups = [{ id: 'g', name: '措辞', enabled: false }];
+  const closed = await f.ctl.detect();
+  assert.equal(closed.count, 0);
+  assert.equal(settings.rules[0].enabled, true);
+  settings.ruleGroups[0].enabled = true;
+  const open = await f.ctl.detect();
+  assert.equal(open.count, 1);
+  assert.equal(f.ctl.editable(closed), false);
+});
+
+test('old numeric priorities migrate to three levels with a visible notice for collapsed ranks', () => {
+  const f = fixture();
+  f.ctx.extensionSettings.text_revision = { rules: [
+    { id: 'a', kind: 'regex', find: '极其', values: [], remove: true, priority: 20 },
+    { id: 'b', kind: 'regex', find: '极度', values: [], remove: true, priority: 10 },
+    { id: 'c', kind: 'regex', find: '极具', values: [], remove: true, priority: 0 },
+  ] };
+  const settings = f.ctl.settings();
+  assert.deepEqual(settings.rules.map(rule => rule.priorityLevel), [1, 1, 2]);
+  assert.ok(settings.rules.every(rule => !('priority' in rule)));
+  assert.deepEqual(settings.priorityMigrationNotice.values, [20, 10]);
+  assert.deepEqual(settings.priorityMigrationNotice.rules.map(rule => rule.find), ['极其', '极度']);
+});
+
 test('global plugin switch stops detection and invalidates pending review results', async () => {
   const f = fixture(), round = await f.ctl.detect();
   f.ctl.settings().enabled = false;
