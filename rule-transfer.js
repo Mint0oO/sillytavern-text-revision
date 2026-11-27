@@ -36,8 +36,8 @@ export function parseRuleSet(text) {
   let data;
   try { data = JSON.parse(text); }
   catch (error) { throw new Error(`JSON 格式无效：${error.message}`); }
-  if (!data || Array.isArray(data) || typeof data !== 'object') throw new Error('这不是 Henge 规则集对象。');
-  if (data.type !== RULE_SET_TYPE) throw new Error('这不是 Henge 导出的规则集。');
+  if (!data || Array.isArray(data) || typeof data !== 'object') throw new Error('这不是词句修订规则集对象。');
+  if (data.type !== RULE_SET_TYPE) throw new Error('这不是词句修订导出的规则集。');
   if (![1, 2, RULE_SET_FORMAT_VERSION].includes(data.formatVersion)) throw new Error(`不支持规则集格式版本 ${String(data.formatVersion)}。`);
   if (!Array.isArray(data.rules)) throw new Error('规则集缺少 rules 数组。');
   if (data.rules.length > 200) throw new Error('规则集最多包含 200 条规则。');

@@ -19,25 +19,15 @@ export function createRuleDraft(rule) {
   const wholeReplacement = rule?.replacementMode === 'text';
   let values = rule?.action === 'delete' ? [] : rule?.values ?? [];
   return { find, valuesText: wholeReplacement ? values.join('') : formatRuleValues(values), wholeReplacement,
-    priorityLevel: priorityLevel(rule), groupId: rule?.groupId ?? '', sample: '' };
+    priorityLevel: priorityLevel(rule), groupId: rule?.groupId ?? '',
+    execution: rule?.execution === 'auto' || rule?.execution === 'review' ? rule.execution : 'inherit', sample: '' };
 }
 
 export function simpleRule(draft, old) {
   const values = draft.wholeReplacement ? (draft.valuesText.length ? [draft.valuesText] : []) : parseRuleValues(draft.valuesText);
   return validateRule({ id: old?.id, enabled: old?.enabled ?? true, kind: 'regex', editorVersion: 1,
     find: draft.find, values, action: values.length ? 'replace' : 'delete', remove: !values.length,
-    replacementMode: draft.wholeReplacement ? 'text' : 'candidates', execution: 'inherit',
+    replacementMode: draft.wholeReplacement ? 'text' : 'candidates',
+    execution: draft.execution ?? old?.execution ?? 'inherit',
     priorityLevel: draft.priorityLevel ?? priorityLevel(old), groupId: draft.groupId ?? old?.groupId ?? null });
-}
-
-// One column deletes; a second column supplies replacement candidates.
-export function bulkRules(text) {
-  const lines = text.split(/\r?\n/).filter(line => line.trim());
-  if (!lines.length || lines.length > 200) throw new Error('请填写 1–200 行规则。');
-  return lines.map((line, i) => {
-    const [find, valuesText = '', ...extra] = line.split('\t');
-    if (extra.length) throw new Error('第 ' + (i + 1) + ' 行只需查找和替换两列，请用一个 Tab 分隔。');
-    try { return simpleRule({ ...createRuleDraft(), find, valuesText }); }
-    catch (error) { throw new Error('第 ' + (i + 1) + ' 行：' + error.message); }
-  });
 }

@@ -84,6 +84,7 @@ export function renderRulesView(all, f, execution = 'review', deletion = {}, set
   const row = r => {
     const visibleFind = summarizeRuleFind(r.find);
     const action = r.action === 'delete' ? '删除' : r.action === 'review' ? '仅提示' : (r.values?.length > 1 ? '随机替换' : '替换');
+    const override = r.execution === 'auto' ? '自动' : r.execution === 'review' ? '审查' : '';
     const priority = PRIORITY_LABELS[r.priorityLevel ?? (Number(r.priority ?? 0) > 0 ? 1 : 2)] ?? '中';
     const selected = selectedIds.has(r.id);
     const rowAction = deleteMode
@@ -92,7 +93,7 @@ export function renderRulesView(all, f, execution = 'review', deletion = {}, set
     const rowControl = deleteMode
       ? `<label class="tr-select tr-rule-delete-check"><input type="checkbox" data-rule-delete-check="${esc(r.id)}" aria-label="选择要删除的规则：${esc(r.find)}" ${selected ? 'checked' : ''}></label>`
       : `<label class="tr-select"><input type="checkbox" data-rule-enabled="${esc(r.id)}" aria-label="启用规则：${esc(r.find)}" ${r.enabled !== false ? 'checked' : ''}></label>`;
-    return `<section class="tr-rule-section ${selected ? 'tr-rule-delete-selected' : ''}"><div class="tr-rule-row">${button(`<span class="tr-rule-find" title="${esc(r.find)}">${esc(visibleFind)}</span><span class="tr-meta">${deleteMode ? (selected ? '已选择' : '选择') : `${priority} · ${action} ›`}</span>`, rowAction)}${rowControl}</div></section>`;
+    return `<section class="tr-rule-section ${selected ? 'tr-rule-delete-selected' : ''}"><div class="tr-rule-row">${button(`<span class="tr-rule-find" title="${esc(r.find)}">${esc(visibleFind)}</span><span class="tr-meta">${deleteMode ? (selected ? '已选择' : '选择') : `${priority} · ${override}${action} ›`}</span>`, rowAction)}${rowControl}</div></section>`;
   };
   const unsupported = rules.filter(isLegacyRule);
   const executionStatus = `<div class="tr-execution-status"><span>${ruleExecutionStatus(execution, settings)}</span><span class="tr-execution-hint" aria-hidden="true">可前往设置修改</span></div>`;
@@ -107,9 +108,10 @@ export function renderRulesView(all, f, execution = 'review', deletion = {}, set
     const active = effectiveRules(all.filter(rule => group ? rule.groupId === id : !rule.groupId || !groupIds.has(rule.groupId)), groups).length;
     const closed = !f.search && collapsed.has(id);
     const name = group?.name ?? '未分组';
-    const controls = group && !deleteMode ? `<label class="tr-select tr-group-switch" title="${esc(name)}分组开关"><input type="checkbox" data-group-enabled="${esc(id)}" aria-label="启用${esc(name)}分组" ${group.enabled !== false ? 'checked' : ''}></label>${button('改名', `class="tr-group-small" data-action="edit-group" data-group-id="${esc(id)}"`)}${button('删除', `class="tr-group-small" data-action="delete-group" data-group-id="${esc(id)}"`)}` : '';
+    const groupMode = group?.execution === 'auto' ? '自动 · ' : group?.execution === 'review' ? '审查 · ' : '';
+    const controls = group && !deleteMode ? `<label class="tr-select tr-group-switch" title="${esc(name)}分组开关"><input type="checkbox" data-group-enabled="${esc(id)}" aria-label="启用${esc(name)}分组" ${group.enabled !== false ? 'checked' : ''}></label>${button('编辑', `class="tr-group-small" data-action="edit-group" data-group-id="${esc(id)}"`)}${button('删除', `class="tr-group-small" data-action="delete-group" data-group-id="${esc(id)}"`)}` : '';
     const chevron = `<svg class="tr-group-chevron ${closed ? 'tr-chevron-closed' : ''}" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m6 9 6 6 6-6"/></svg>`;
-    return `<section class="tr-rule-group ${group?.enabled === false ? 'tr-group-disabled' : ''}"><div class="tr-group-heading">${button(`${chevron}<strong>${esc(name)}</strong><span class="tr-meta">生效 ${active} / ${total}</span>`, `class="tr-group-collapse" data-group-collapse="${esc(id)}" aria-expanded="${!closed}" aria-label="${closed ? '展开' : '收起'}${esc(name)}分组" ${f.search ? 'disabled' : ''}`)}${controls}</div>${closed ? '' : `<div class="tr-group-members">${members.map(row).join('') || '<p class="tr-meta tr-group-empty">分组中还没有规则。</p>'}</div>`}</section>`;
+    return `<section class="tr-rule-group ${group?.enabled === false ? 'tr-group-disabled' : ''}"><div class="tr-group-heading">${button(`${chevron}<strong>${esc(name)}</strong><span class="tr-meta">${groupMode}生效 ${active} / ${total}</span>`, `class="tr-group-collapse" data-group-collapse="${esc(id)}" aria-expanded="${!closed}" aria-label="${closed ? '展开' : '收起'}${esc(name)}分组" ${f.search ? 'disabled' : ''}`)}${controls}</div>${closed ? '' : `<div class="tr-group-members">${members.map(row).join('') || '<p class="tr-meta tr-group-empty">分组中还没有规则。</p>'}</div>`}</section>`;
   };
   const migration = settings.priorityMigrationNotice;
   const notice = migration?.values?.length ? `<div class="tr-save-pending">旧规则中的 ${migration.values.join('、')} 等数字优先级已归为“高”；不同旧数字之间的顺序可能变化。受影响规则：${migration.rules.slice(0, 5).map(rule => esc(rule.find)).join('、')}${migration.rules.length > 5 ? `等 ${migration.rules.length} 条` : ''}。${button('知道了', 'data-action="dismiss-priority-notice"')}</div>` : '';

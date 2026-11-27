@@ -6,6 +6,7 @@ input[type=checkbox]:checked::before{transform:scale(1)}
 #extensionsMenu{position:fixed;bottom:70px;left:12px;background:#eee;padding:8px;border:1px solid #888}
 #chat{display:grid;gap:12px;margin:18px 0}.mes{padding:10px;border:1px solid #aaa;border-radius:8px}.mes_buttons{display:flex;justify-content:flex-end;gap:8px}.mes_button{width:32px;height:32px;display:grid;place-items:center}.mesIDDisplay{font-size:12px;color:#666}
 #extensionsMenuButton{position:fixed;bottom:14px;left:12px}#demo-rounds{font-size:12px}
+#extensions_settings2{margin-top:16px}.inline-drawer{border:1px solid #888;border-radius:8px;background:#f4f1ea;overflow:hidden}.inline-drawer-header{display:flex;justify-content:space-between;align-items:center;padding:8px 12px;cursor:pointer}.inline-drawer-content{display:none;padding:8px 12px;border-top:1px solid #ccc}.inline-drawer.open .inline-drawer-content{display:block}
 </style></head><body>
   <main><h1>词句修订 · 测试聊天</h1><p id="demo-info">本地模拟酒馆接口，不连接模型。可测试保存、刷新、上下文和手机操作。</p><button id="demo-generate">模拟回复完成</button><button id="demo-reroll">模拟重 roll（单句）</button><button id="demo-tags">载入标签测试回复</button><button id="demo-language">载入规则测试回复</button><button id="demo-regex">载入正则测试回复</button><button id="demo-sentences">载入符号测试回复</button><button id="demo-next">查看下次请求的上下文</button><button id="demo-reset">重置测试聊天</button><label><input type="checkbox" id="demo-fail">模拟保存失败</label><div id="chat"></div><pre id="demo-body"></pre><pre id="demo-context" hidden></pre><div id="extensions_settings2"></div></main><button id="extensionsMenuButton" aria-label="魔棒菜单">✦ 魔棒</button><div id="extensionsMenu" hidden></div><output id="demo-rounds"></output>
 <script type="module">
@@ -21,6 +22,7 @@ const nativeFetch=window.fetch;
 window.fetch=async(url,options)=>{if(url==='/api/chats/get'||url==='/api/chats/group/get'){const disk=JSON.parse(localStorage.getItem(demoStorageKey)||'null');return new Response(JSON.stringify([{chat_metadata:disk?.metadata},...(disk?.chat??[])]),{headers:{'Content-Type':'application/json'}})}return nativeFetch(url,options)};
 window.SillyTavern={getContext:()=>ctx};
 await import('/index.js');ctx.updateMessageBlock();
+document.addEventListener('click',e=>{const toggle=e.target.closest('.inline-drawer-toggle');if(toggle)toggle.closest('.inline-drawer')?.classList.toggle('open')});
 document.getElementById('extensionsMenuButton').onclick=()=>{const menu=document.getElementById('extensionsMenu');menu.hidden=!menu.hidden};
 document.getElementById('extensionsMenu').onclick=()=>{document.getElementById('extensionsMenu').hidden=true};
 document.getElementById('demo-reroll').onclick=async()=>{await ctx.eventSource.emit(events.GENERATION_STARTED);const m=ctx.chat[0],text='他极其疲惫。';m.swipe_id=m.swipes.length;m.swipes.push(text);m.mes=text;ctx.updateMessageBlock();await ctx.eventSource.emit(events.CHARACTER_MESSAGE_RENDERED,0)};

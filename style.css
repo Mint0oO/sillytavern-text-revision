@@ -54,6 +54,8 @@
 #tr-root textarea{resize:vertical;min-height:104px;line-height:1.75;max-height:50dvh}
 #tr-root .tr-field{display:block;margin:16px 0 12px}
 #tr-root .tr-field input,#tr-root .tr-field textarea,#tr-root .tr-field select{margin-top:6px}
+#tr-root .tr-field .tr-setting-select{margin-top:6px}
+#tr-root .tr-field .tr-setting-select select{margin-top:0;min-height:44px;font-size:15px}
 #tr-root details{font-size:13px;margin:8px 0}
 #tr-root summary{color:var(--tr-muted);cursor:pointer;padding:5px 0;min-height:30px;touch-action:manipulation}
 #tr-root .tr-candidate{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:6px 0}
@@ -105,6 +107,10 @@
 @media(pointer:coarse){#tr-root .tr-icon,#tr-root .tr-select,#tr-root button,#tr-root summary{min-height:44px}#tr-root .tr-icon,#tr-root .tr-select{min-width:44px}}
 #tr-launcher[hidden]{display:none!important}
 #tr-wand-entry{font:inherit;color:inherit;background:transparent;border:0;text-align:left;width:100%;cursor:pointer}
+#tr-extension-settings{width:100%}
+#tr-extension-settings .tr-drawer-body{display:flex;flex-direction:column;gap:8px;padding:6px 2px}
+#tr-extension-settings .tr-drawer-toggle{display:flex;align-items:center;gap:8px;margin:0;cursor:pointer}
+#tr-extension-settings .tr-drawer-open{width:100%;display:flex;align-items:center;justify-content:center;white-space:nowrap}
 #tr-root .tr-review-bar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:6px;white-space:nowrap;border-bottom:1px solid var(--tr-border);font-size:12px;color:var(--tr-muted);min-height:40px}
 #tr-root .tr-review-bar .tr-legend{border:0;padding:0;font-size:12px;gap:7px}
 #tr-root .tr-review-bar button{padding:4px 0;font-size:12px}
@@ -204,6 +210,7 @@
 #tr-root .tr-group-empty{padding:6px 2px}
 #tr-root .tr-rule-options{display:grid;grid-template-columns:1fr 1fr;gap:10px}
 #tr-root .tr-rule-options .tr-field{min-width:0;font-size:13px}
+#tr-root .tr-rule-options .tr-rule-choice-wide{grid-column:1 / -1}
 #tr-root .tr-rule-choice-label{display:block}
 #tr-root .tr-rule-choice{position:relative;margin:6px 0 0;border:1px solid var(--tr-border);border-radius:8px;background:var(--tr-surface)}
 #tr-root .tr-rule-choice[open]{z-index:4;border-radius:8px 8px 0 0}
@@ -229,7 +236,6 @@
 #tr-root .tr-field-heading .tr-meta{display:inline;margin:0;text-align:right}
 #tr-root .tr-rule-editor textarea{min-height:64px;height:64px;max-height:180px}
 #tr-root .tr-form-actions{gap:8px}
-#tr-root .tr-legacy-rules{margin:18px 0;color:var(--tr-muted)}
 #tr-root [data-rule-filter="search"]{flex:1 1 64px;width:0;min-width:64px;max-width:none;height:32px;margin:0;padding:4px 8px;font-size:13px}
 #tr-root .tr-rule-delete-selected{background:color-mix(in srgb,var(--tr-strike) 8%,var(--tr-surface));box-shadow:inset 2px 0 color-mix(in srgb,var(--tr-strike) 65%,transparent)}
 #tr-root .tr-rule-delete-check input{accent-color:var(--tr-strike)}

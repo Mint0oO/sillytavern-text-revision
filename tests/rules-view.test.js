@@ -84,6 +84,21 @@ test('group switch changes effective counts without changing rule switches', () 
   assert.equal(rules[0].enabled, true, 'closing a group must retain its members’ switches');
 });
 
+test('group and rule execution overrides are shown compactly in the rules list', () => {
+  const rules = [
+    { id: 'one', kind: 'regex', find: '极其', values: [], action: 'delete', enabled: true, groupId: 'words', priorityLevel: 2, execution: 'inherit' },
+    { id: 'two', kind: 'regex', find: '猛地', values: [], action: 'delete', enabled: true, groupId: 'words', priorityLevel: 2, execution: 'review' },
+    { id: 'three', kind: 'regex', find: '极度', values: ['很'], action: 'replace', enabled: true, priorityLevel: 1, execution: 'auto' },
+  ];
+  const groups = [{ id: 'words', name: '字词', enabled: true, execution: 'auto' }];
+  const html = renderRulesView(rules, { search: '' }, 'review', {}, { ruleGroups: groups });
+  assert.match(html, /自动 · 生效 2 \/ 2/);
+  assert.match(html, /data-action="edit-group"[^>]*>编辑<\/button>/);
+  assert.match(html, /中 · 删除 ›/);
+  assert.match(html, /中 · 审查删除 ›/);
+  assert.match(html, /高 · 自动替换 ›/);
+});
+
 test('rules status distinguishes automatic triggering, execution and disabled plugin', () => {
   assert.equal(ruleExecutionStatus('review'), '自动检测，人工审查');
   assert.equal(ruleExecutionStatus('auto'), '自动检测并应用');

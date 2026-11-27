@@ -226,6 +226,31 @@ test('a background result cannot replace another floor that is already open', as
   assert.equal(opened, 0);
 });
 
+test('group modal submits name and execution mode cleanly', async () => {
+  const settings = { ruleGroups: [{ id: 'g1', name: '字词', enabled: true, execution: 'inherit' }] };
+  let saves = 0, closed = 0, rendered = 0, status = '';
+  const ui = Object.assign(Object.create(RevisionUI.prototype), {
+    groupId: 'g1',
+    c: { settings: () => settings, saveSettings() { saves++; } },
+    groupModal: {
+      querySelector(selector) {
+        if (selector === '#tr-group-name') return { value: '字词' };
+        if (selector === '#tr-group-execution') return { value: 'auto' };
+        return null;
+      },
+      close() { closed++; },
+    },
+    render() { rendered++; },
+    say(text) { status = text; },
+  });
+  await ui.submit({ target: { id: 'tr-group-form' } });
+  assert.equal(settings.ruleGroups[0].execution, 'auto');
+  assert.equal(saves, 1);
+  assert.equal(closed, 1);
+  assert.equal(rendered, 1);
+  assert.match(status, /分组已保存/);
+});
+
 test('message toolbar ids are read again from the owning host message', () => {
   const message = { getAttribute: name => name === 'mesid' ? '109' : null };
   assert.equal(messageIdFromElement({ closest: selector => selector === '.mes' ? message : null }), 109);

@@ -217,7 +217,7 @@ export class RevisionController {
       if (this.selectedId !== previous.id) { this.selectedId = previous.id; this.onChange(); }
       return null;
     }
-    const round = await scanPrepared(snapshot.text, rules, { scope, context: c, executionDefault: settings.ruleExecution });
+    const round = await scanPrepared(snapshot.text, rules, { scope, context: c, executionDefault: settings.ruleExecution, groups: settings.ruleGroups });
     checkCancelled();
     const now = this.context();
     let currentMessageId = -1;
@@ -262,10 +262,9 @@ export class RevisionController {
     try {
       const key = chatKey(this.context());
       await this.enqueueWrite(async () => {
-        const c = this.context(), latest = this.history().at(-1);
+        const c = this.context();
         await c.saveChat();
         if (chatKey(this.context()) !== key) throw new DetectionCancelledError();
-        if (latest) await this.verifySave(c, latest, latest.expected, undefined, true);
       }, key);
       this.recordSaveError = null;
     } catch (error) {

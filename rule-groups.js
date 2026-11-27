@@ -1,4 +1,19 @@
 export const PRIORITY_LABELS = { 1: '高', 2: '中', 3: '低' };
+export const EXECUTION_LABELS = { inherit: '跟随', auto: '自动应用', review: '人工审查' };
+
+export function normalizeExecution(value, fallback = 'inherit') {
+  if (value == null || value === '') return fallback;
+  if (value === 'inherit' || value === 'auto' || value === 'review') return value;
+  throw new Error('处理方式请选择跟随、自动应用或人工审查。');
+}
+
+export function resolveRuleExecution(rule, groups = [], globalExecution = 'review') {
+  if (rule?.action === 'review') return 'review';
+  if (rule?.execution === 'auto' || rule?.execution === 'review') return rule.execution;
+  const group = rule?.groupId ? groups.find(item => item.id === rule.groupId) : null;
+  if (group?.execution === 'auto' || group?.execution === 'review') return group.execution;
+  return globalExecution === 'auto' ? 'auto' : 'review';
+}
 
 export function priorityLevel(rule = {}) {
   if (rule.priorityLevel != null) {
@@ -38,7 +53,7 @@ export function normalizeRuleGroups(groups = []) {
     if (!id || id.length > 80 || !name || name.length > 40) throw new Error('分组名称需要 1–40 字。');
     if (ids.has(id) || names.has(name.toLocaleLowerCase())) throw new Error('分组名称或编号重复。');
     ids.add(id); names.add(name.toLocaleLowerCase());
-    return { id, name, enabled: group.enabled !== false };
+    return { id, name, enabled: group.enabled !== false, execution: normalizeExecution(group.execution, 'inherit') };
   });
 }
 

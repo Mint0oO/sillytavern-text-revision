@@ -309,6 +309,46 @@ test('server readback separates an old body, a third-party body, and an unknown 
   await assert.rejects(verifyChatSave(f.ctx, r, proposed, before), /回读超时/);
 });
 
+test('execution precedence resolves rule override over group setting over global default', async () => {
+  const f = fixture();
+  const source = '他极其疲惫，猛地抬头，极度冷静，语气沉重。';
+  f.ctx.chat[0].mes = source;
+  f.ctx.chat[0].swipes[1] = source;
+  const settings = f.ctl.settings();
+  settings.ruleExecution = 'review';
+  settings.ruleGroups = [
+    { id: 'words', name: '字词', enabled: true, execution: 'auto' },
+    { id: 'style', name: '句式', enabled: true, execution: 'review' },
+  ];
+  settings.rules = [
+    validateRule({ id: 'a', kind: 'regex', editorVersion: 1, find: '极其', values: [], remove: true, action: 'delete', groupId: 'words', execution: 'inherit' }),
+    validateRule({ id: 'b', kind: 'regex', editorVersion: 1, find: '猛地', values: [], remove: true, action: 'delete', groupId: 'words', execution: 'review' }),
+    validateRule({ id: 'c', kind: 'regex', editorVersion: 1, find: '极度', values: [], remove: true, action: 'delete', groupId: 'style', execution: 'auto' }),
+    validateRule({ id: 'd', kind: 'regex', editorVersion: 1, find: '沉重', values: ['低沉'], remove: false, action: 'replace', groupId: 'style', execution: 'inherit' }),
+  ];
+  const r = await f.ctl.detect();
+  await f.ctl.commit(r, { automatic: true });
+  assert.equal(f.disk()[0].mes, '他疲惫，猛地抬头，冷静，语气沉重。');
+  assert.equal(r.reviewed, false);
+  settings.ruleGroups[0].execution = 'review';
+  assert.equal(f.ctl.editable(r), false);
+});
+
+test('ordinary draft persistence saves without full-chat readback while body writes still verify', async () => {
+  let verifications = 0;
+  const f = fixture();
+  const baseVerify = f.ctl.verifySave;
+  f.ctl.verifySave = async (...args) => { verifications++; return baseVerify(...args); };
+  const round = await f.ctl.detect();
+  assert.equal(verifications, 0, 'detect draft save must not trigger full-chat readback');
+  await f.ctl.commit(round);
+  assert.equal(verifications, 1, 'body commit must verify saved chat');
+  await f.ctl.commit(round, { undo: true });
+  assert.equal(verifications, 2, 'undo must verify saved chat');
+  await f.ctl.finishReview(round);
+  assert.equal(verifications, 3, 'finishReview must verify saved chat');
+});
+
 test('one floor holds stable swipe versions while repeated detection updates its version', async () => {
   const f = fixture(), m = f.ctx.chat[0];
   m.swipe_info = [{ gen_started: 'generation-A' }, { gen_started: 'generation-B' }];

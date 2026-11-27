@@ -54,7 +54,7 @@ export function validateRule(rule) {
   if (groupId && groupId.length > 80) throw new Error('规则所属分组编号过长。');
   return { id: String(rule.id || newId()), find, kind: 'regex', values, remove, action, enabled: rule.enabled !== false,
     editorVersion: 1, replacementMode: rule.replacementMode === 'text' ? 'text' : 'candidates',
-    execution: rule.editorVersion === 1 && rule.execution === 'inherit' ? 'inherit' : rule.execution === 'auto' && action !== 'review' ? 'auto' : 'review',
+    execution: rule.execution === 'inherit' ? 'inherit' : rule.execution === 'auto' && action !== 'review' ? 'auto' : 'review',
     priorityLevel: level, groupId };
 }
 
@@ -181,9 +181,7 @@ export function textRanges(text, config) {
 }
 
 export function replacement(match) {
-  if (match.value === null) return null;
-  const result = match.resolved ? match.value : match.value.replace(/\{[A-Z]\}/g, k => match.captures[k] ?? k);
-  return result === '' ? '' : result + (match.trailing ?? '');
+  return match.value === null ? null : match.value;
 }
 export function proposal(group) {
   if (group.kept) return group.applied ?? group.original;
@@ -217,7 +215,7 @@ function editOperations(group, includeUnresolved = false) {
 function unresolvedOverlap(component, sentence) {
   const start = Math.min(...component.map(m => m.start));
   const end = Math.max(...component.map(m => m.end));
-  return { ...component[0], start, end, coreEnd: end, old: sentence.slice(start, end), value: null, options: [], remove: false, action: 'review', reason: '多条规则重叠，请手动修改。', execution: 'review', trailing: '' };
+  return { ...component[0], start, end, coreEnd: end, old: sentence.slice(start, end), value: null, options: [], remove: false, action: 'review', reason: '多条规则重叠，请手动修改。', execution: 'review' };
 }
 
 function resolveOverlaps(found, sentence, random) {
@@ -282,7 +280,7 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
         const choice = rule.action === 'delete' ? '' : rule.action === 'replace' ? values[Math.min(values.length - 1, Math.floor(random() * values.length))] : null;
         if (choice === m[0]) continue;
         const coreEnd = m.index + m[0].length;
-        found.push({ start: m.index, end: coreEnd, coreEnd, old: m[0], trailing: '', reviewAtEnd: false, priorityLevel: rule.priorityLevel, ruleId: rule.id, ruleFind: rule.find, action: rule.action, execution: rule.execution, resolved: true, captures: m.captures ?? {}, options: values, remove: rule.remove, value: choice, generic: false, reason: '', done: false });
+        found.push({ start: m.index, end: coreEnd, coreEnd, old: m[0], priorityLevel: rule.priorityLevel, ruleId: rule.id, ruleFind: rule.find, action: rule.action, execution: rule.execution, captures: m.captures ?? {}, options: values, remove: rule.remove, value: choice, reason: '', done: false });
         if (found.length > LIMITS.matches) throw new Error('匹配过多，请缩小规则范围后重试。');
       }
     }
@@ -290,7 +288,6 @@ export function scan(text, rules, { random = Math.random, id = newId(), time = D
     if (!matches.length) continue;
     matches.forEach((m, i) => { m.id = i; });
     const group = { id: groups.length, start: sentence.index, end: sentence.index + sentence.text.length, original: sentence.text, matches, manual: false, draft: '', applied: null, kept: false, selected: true };
-    if (matches.some(m => m.reviewAtEnd && m.value === '') && /^(?:他|她|它|我|你|我们|你们|他们)?[。！？!?]?$/.test(proposal(group).trim())) matches.forEach(m => { m.value = null; m.reason = '删除后句子可能不完整，请手动修改。'; });
     group.selected = ready(group);
     groups.push(group);
     count += matches.length;
@@ -352,10 +349,7 @@ export function inlineHTML(group) {
     result += escapeHTML(group.original.slice(cursor, edit.start));
     const m = edit.matches[0], next = edit.result;
     if (next === null) result += `<mark title="${escapeHTML(m.reason || '请手动修改或选择候选')}">${escapeHTML(edit.old)}</mark>`;
-    else if (edit.matches.length === 1 && /^\{[A-Z]\}$/.test(m.value) && next && !m.trailing) {
-      const at = m.value === '{A}' ? edit.old.indexOf(next) : edit.old.lastIndexOf(next);
-      result += `<del>${escapeHTML(edit.old.slice(0, at))}</del>${escapeHTML(next)}<del>${escapeHTML(edit.old.slice(at + next.length))}</del>`;
-    } else result += diffHTML(edit.old, next);
+    else result += diffHTML(edit.old, next);
     cursor = edit.end;
   }
   return result + escapeHTML(group.original.slice(cursor));

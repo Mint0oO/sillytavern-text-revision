@@ -488,7 +488,7 @@ export class RevisionUI {
     const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
     const link = document.createElement('a');
     link.href = url;
-    link.download = `henge-rules-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `词句修订-规则-${new Date().toISOString().slice(0, 10)}.json`;
     document.body.append(link);
     link.click();
     link.remove();
@@ -498,7 +498,7 @@ export class RevisionUI {
   exportRawRules() {
     const data = { type: 'henge-legacy-rule-backup', exportedAt: new Date().toISOString(), rules: clone(this.c.settings().rules) };
     const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' }));
-    const link = document.createElement('a'); link.href = url; link.download = `henge-旧规则备份-${Date.now()}.json`;
+    const link = document.createElement('a'); link.href = url; link.download = `词句修订-旧规则备份-${Date.now()}.json`;
     document.body.append(link); link.click(); link.remove();
     setTimeout(() => URL.revokeObjectURL(url), 60000);
     this.say('已发起旧规则原始备份下载；该备份仅用于保留资料，不能作为新版规则集导入。');
@@ -549,8 +549,9 @@ export class RevisionUI {
   openGroupModal(groupId = null) {
     this.groupId = groupId;
     const group = this.c.settings().ruleGroups.find(item => item.id === groupId);
+    const execution = group?.execution ?? 'inherit';
     this.groupModal.querySelector('h3').textContent = group ? '编辑分组' : '新建分组';
-    this.groupModal.querySelector('.tr-modal-body').innerHTML = `<form id="tr-group-form" class="tr-rule-editor"><label class="tr-field">分组名称<input id="tr-group-name" required maxlength="40" value="${esc(group?.name ?? '')}" autocomplete="off"></label><div class="tr-form-actions">${button('取消', 'data-action="cancel-group"')}<button type="submit" class="tr-primary">保存分组</button></div></form>`;
+    this.groupModal.querySelector('.tr-modal-body').innerHTML = `<form id="tr-group-form" class="tr-rule-editor"><label class="tr-field">分组名称<input id="tr-group-name" required maxlength="40" value="${esc(group?.name ?? '')}" autocomplete="off"></label><label class="tr-field">处理方式<span class="tr-setting-select"><select id="tr-group-execution"><option value="inherit" ${execution === 'inherit' ? 'selected' : ''}>跟随全局</option><option value="auto" ${execution === 'auto' ? 'selected' : ''}>自动应用</option><option value="review" ${execution === 'review' ? 'selected' : ''}>人工审查</option></select><svg class="tr-select-arrow" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="m2 4 4 4 4-4"/></svg></span></label><div class="tr-form-actions">${button('取消', 'data-action="cancel-group"')}<button type="submit" class="tr-primary">保存分组</button></div></form>`;
     if (!this.groupModal.open) this.groupModal.showModal();
     this.groupModal.querySelector('#tr-group-name')?.focus({ preventScroll: true });
   }
@@ -780,7 +781,7 @@ export class RevisionUI {
         if (!legacy?.length) throw new Error('当前聊天没有待导出的旧记录。');
         const blob = new Blob([JSON.stringify({ type: 'henge-history-backup', exportedAt: new Date().toISOString(), chat: this.c.context().chatId, rounds: legacy }, null, 2)], { type: 'application/json' });
         const url = URL.createObjectURL(blob), link = document.createElement('a');
-        link.href = url; link.download = `Henge-旧记录备份-${Date.now()}.json`;
+        link.href = url; link.download = `词句修订-旧记录备份-${Date.now()}.json`;
         document.body.append(link); link.click(); link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 60000);
         this.historyBackupExported = chatKey(this.c.context()); this.render(); this.say('已发起本地备份下载。请确认文件已保存后，再清理旧副本。');
@@ -959,9 +960,10 @@ export class RevisionUI {
   submit(e) {
     if (e.target.id === 'tr-group-form') {
       const settings = this.c.settings(), name = this.groupModal.querySelector('#tr-group-name')?.value.trim();
+      const execution = this.groupModal.querySelector('#tr-group-execution')?.value ?? 'inherit';
       const current = settings.ruleGroups.find(item => item.id === this.groupId);
-      const updated = current ? settings.ruleGroups.map(item => item.id === current.id ? { ...item, name } : item)
-        : [...settings.ruleGroups, { id: newId(), name, enabled: true }];
+      const updated = current ? settings.ruleGroups.map(item => item.id === current.id ? { ...item, name, execution } : item)
+        : [...settings.ruleGroups, { id: newId(), name, enabled: true, execution }];
       settings.ruleGroups = normalizeRuleGroups(updated);
       this.c.saveSettings(); this.groupModal.close(); this.render(); this.say('分组已保存，重新检测后生效。');
       return;

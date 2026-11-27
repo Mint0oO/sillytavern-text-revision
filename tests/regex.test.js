@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { scanPrepared } from '../scanner.js';
 import { proposal, applySelected, validateRule } from '../engine.js';
-import { createRuleDraft, simpleRule, bulkRules } from '../rule-editor.js';
+import { createRuleDraft, simpleRule } from '../rule-editor.js';
 import { renderRuleForm } from '../rule-form.js';
 
 const rule = (find, values = [], extra = {}) => validateRule({ kind: 'regex', find, values, remove: true, action: values.length ? 'replace' : 'delete', ...extra });
@@ -61,15 +61,26 @@ test('auto edits only eligible occurrences and a chosen overlap applies without 
   assert.equal(conflict.expected, '他抓住。');
 });
 
-test('editor preserves old punctuation and batches support random candidates', () => {
+test('editor preserves values and execution override while keeping form compact', () => {
   const original = rule('/死死地?/g', ['轻轻, 缓缓{{char}}'], { execution: 'auto', category: 'sentence' });
-  assert.deepEqual(simpleRule(createRuleDraft(original), original).values, original.values);
-  const batch = bulkRules('/这些|那些/g\t花园里的, 那些\n/死死地?/g\t{{random::轻轻::缓缓}}', { mode: 'regex', action: 'replace' });
-  assert.equal(batch.length, 2); assert.deepEqual(batch[0].values, ['花园里的', '那些']);
-  assert.throws(() => bulkRules('甲\t乙\n[', { action: 'replace' }), /第 2 行/);
+  const savedOriginal = simpleRule(createRuleDraft(original), original);
+  assert.deepEqual(savedOriginal.values, original.values);
+  assert.equal(savedOriginal.execution, 'auto');
   const draft = createRuleDraft(); draft.find = '死死地?';
   const saved = simpleRule(draft), html = renderRuleForm(createRuleDraft(saved));
   assert.match(html, /替换为/); assert.doesNotMatch(html, /附加条件/);
+});
+
+test('reused worker handles concurrent scans cleanly and recovers after a timeout', async () => {
+  const [first, second] = await Promise.all([
+    scanPrepared('他死死地抓住。', [rule('死死地?')]),
+    scanPrepared('她极其安静。', [rule('极其', ['很'])]),
+  ]);
+  assert.equal(first.count, 1);
+  assert.equal(second.count, 1);
+  await assert.rejects(scanPrepared('a'.repeat(150) + '!', [rule('/(a+)+$/g')], { timeout: 250 }), /超时/);
+  const recovered = await scanPrepared('他极其紧张。', [rule('极其')]);
+  assert.equal(recovered.count, 1);
 });
 
 test('logs use the last applied text when a saved occurrence is edited again', async () => {

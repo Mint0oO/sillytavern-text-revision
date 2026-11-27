@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createRuleDraft, simpleRule, isLegacyRule, bulkRules } from '../rule-editor.js';
+import { createRuleDraft, simpleRule, isLegacyRule } from '../rule-editor.js';
 import { validateRule, applySelected } from '../engine.js';
 import { scanPrepared } from '../scanner.js';
 import { parseRegex, parseRegexes, splitRegexBranches } from '../regex-support.js';
@@ -99,22 +99,27 @@ test('retired rules cannot be silently edited into a different regex', () => {
   assert.deepEqual(saved.values, ['轻轻, 缓缓']);
 });
 
-test('bulk infers deletion or replacement per line and rejects invalid rows atomically', () => {
-  const rules = bulkRules('死死地?\n极其, 极致\t十分, 很\n不是(.+)，而是(.+)\t$2');
-  assert.equal(rules[0].action, 'delete');
-  assert.deepEqual(rules[1].values, ['十分', '很']);
-  assert.deepEqual(rules[2].values, ['$2']);
-  assert.throws(() => bulkRules('死死\n[\t很'), /第 2 行/);
-  assert.throws(() => bulkRules('死死\n甲\t乙\t丙'), /第 2 行/);
+test('per-rule execution override round-trips through drafts and defaults to inherit', () => {
+  const fresh = make('死死地?');
+  assert.equal(fresh.execution, 'inherit');
+  const autoRule = make('死死地?', '', { execution: 'auto' });
+  assert.equal(autoRule.execution, 'auto');
+  assert.equal(createRuleDraft(autoRule).execution, 'auto');
+  assert.equal(simpleRule(createRuleDraft(autoRule), autoRule).execution, 'auto');
+  const reviewRule = make('极其', '很', { execution: 'review' });
+  assert.equal(reviewRule.execution, 'review');
+  assert.equal(createRuleDraft(reviewRule).execution, 'review');
 });
 
-test('form has always-visible find/replacement without template or action settings', () => {
+test('form has always-visible find/replacement and priority, group and execution choices', () => {
   const html = renderRuleForm(createRuleDraft());
   assert.match(html, /data-rule-field="find"/);
   assert.match(html, /data-rule-field="valuesText"/);
   assert.match(html, /data-rule-choice="priorityLevel"/);
   assert.match(html, /data-rule-choice="groupId"/);
+  assert.match(html, /data-rule-choice="execution"/);
   assert.match(html, /data-rule-choice-value="2" aria-label="中" aria-pressed="true">中<\/button>/);
+  assert.match(html, /data-rule-choice-value="inherit" aria-label="跟随分组 \/ 全局" aria-pressed="true">跟随分组 \/ 全局<\/button>/);
   assert.match(html, /tr-rule-choice-options/);
   assert.doesNotMatch(html, /data-rule-field="(?:mode|action|category|execution|captures|before|boundary|punctuation)"/);
   assert.doesNotMatch(html, /单个形容词|附加条件|句式助手|wholeReplacement|整段替换|写法示例|>测试文字</);
