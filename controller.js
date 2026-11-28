@@ -61,7 +61,7 @@ export class RevisionController {
     s.appearance ??= 'minimal';
     s.enabled ??= true;
     s.palette ??= 'soft';
-    s.transparency = s.transparency == null ? 30 : Math.max(0, Math.min(100, Number(s.transparency) || 0));
+    s.transparency = s.transparency == null ? 5 : Math.max(0, Math.min(100, Number(s.transparency) || 0));
     s.autoScan ??= true;
     s.ruleExecution ??= 'review';
     s.historyDetection ??= true;

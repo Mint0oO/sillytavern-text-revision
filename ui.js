@@ -287,7 +287,7 @@ export class RevisionUI {
     const s = this.c.settings();
     this.dialog.dataset.theme = s.theme;
     this.dialog.dataset.palette = s.palette;
-    const transparency = Math.max(0, Math.min(100, Number(s.transparency ?? 30) || 0));
+    const transparency = Math.max(0, Math.min(100, Number(s.transparency ?? 5) || 0));
     this.dialog.style.setProperty('--tr-alpha', String(1 - transparency / 100));
     this.launcher.dataset.theme = s.theme;
     if (s.appearance) { this.dialog.dataset.appearance = s.appearance; this.launcher.dataset.appearance = s.appearance; }

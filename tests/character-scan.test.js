@@ -570,13 +570,16 @@ test('re-detecting after applying character edits refreshes live text instead of
   assert.equal(ui.characterSelection.persona, true);
 });
 
-test('fresh settings default background transparency to 30 while preserving explicit 0', async () => {
+test('fresh settings default background transparency to 5 while preserving explicit 0', async () => {
   const { RevisionController } = await import('../controller.js');
+  const { readFileSync } = await import('node:fs');
   const ext = {};
   const ctl = new RevisionController(() => ({ extensionSettings: ext, saveSettingsDebounced() {} }), async () => {});
-  assert.equal(ctl.settings().transparency, 30);
+  assert.equal(ctl.settings().transparency, 5);
   ctl.settings().transparency = 0;
   assert.equal(ctl.settings().transparency, 0);
   ctl.settings().transparency = 55;
   assert.equal(ctl.settings().transparency, 55);
+  const css = readFileSync(new URL('../style.css', import.meta.url), 'utf8');
+  assert.match(css, /#tr-root\[data-appearance\]:not\(\[data-appearance=minimal\]\) \.tr-rows>\.tr-row\.tr-selected\{/);
 });
