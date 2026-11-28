@@ -11,6 +11,7 @@ export function renderSettingsView(s, { legend, slider, glyph }) {
       <h3 id="tr-running-title" tabindex="-1">运行设置</h3>
       ${toggle('tr-plugin-enabled', '启用插件', s.enabled !== false)}
       ${toggle('tr-auto', '自动检测', s.autoScan, '开启后，在 AI 回复完成时执行规则；关闭后仍可手动检测。')}
+      ${toggle('tr-character-revision', '启用角色修订', s.characterRevisionEnabled !== false, '开启后在面板顶部显示「角色」入口，用于手动检测角色卡、世界书与 User 人设；关闭后隐藏入口，不影响已有角色规则。')}
       ${toggle('tr-history-detection', '显示逐楼层检测入口', s.historyDetection !== false, '开启后显示每层检测图标；关闭后隐藏，不影响自动检测。')}
       ${field('tr-rule-execution', '默认处理方式', select('tr-rule-execution', [['review', '人工审查'], ['auto', '自动应用']], s.ruleExecution ?? 'review', 'aria-describedby="tr-execution-help"'), `<span id="tr-execution-help" role="status">${executionDescription(s.ruleExecution)}</span>`, 'tr-setting-execution')}
     </section>

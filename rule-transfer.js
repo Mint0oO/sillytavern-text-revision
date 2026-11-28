@@ -58,18 +58,19 @@ export function parseRuleSet(text) {
   return { ruleExecution: execution(data.ruleExecution), groups, rules, priorityMigration, priorityMigrationRules };
 }
 
-export function applyRuleSet(existing, imported, mode, existingGroups = []) {
+export function applyRuleSet(existing, imported, mode, existingGroups = [], { forceReview = false } = {}) {
   if (!['append', 'replace'].includes(mode)) throw new Error('未知的规则导入方式。');
   const base = mode === 'append' ? existing : [];
   const groups = mode === 'append' ? normalizeRuleGroups(existingGroups) : [];
   const groupIds = new Map();
   for (const group of normalizeRuleGroups(imported.groups ?? [])) {
-    const sameName = groups.find(current => current.name.toLocaleLowerCase() === group.name.toLocaleLowerCase());
-    if (sameName) groupIds.set(group.id, sameName.id);
+    const normalizedGroup = forceReview ? { ...group, execution: 'review' } : group;
+    const sameName = groups.find(current => current.name.toLocaleLowerCase() === normalizedGroup.name.toLocaleLowerCase());
+    if (sameName) groupIds.set(normalizedGroup.id, sameName.id);
     else {
-      const id = mode === 'append' && groups.some(current => current.id === group.id) ? newId() : group.id;
-      groups.push({ ...group, id });
-      groupIds.set(group.id, id);
+      const id = mode === 'append' && groups.some(current => current.id === normalizedGroup.id) ? newId() : normalizedGroup.id;
+      groups.push({ ...normalizedGroup, id });
+      groupIds.set(normalizedGroup.id, id);
     }
   }
   if (groups.length > 50) throw new Error('导入后分组超过 50 个。');
@@ -77,7 +78,11 @@ export function applyRuleSet(existing, imported, mode, existingGroups = []) {
   const added = [];
   let skipped = 0;
   for (const importedRule of imported.rules) {
-    const mapped = { ...importedRule, groupId: importedRule.groupId ? groupIds.get(importedRule.groupId) : null };
+    const mapped = {
+      ...importedRule,
+      groupId: importedRule.groupId ? groupIds.get(importedRule.groupId) : null,
+      ...(forceReview ? { execution: 'review' } : {}),
+    };
     if (importedRule.groupId && !mapped.groupId) throw new Error('导入规则所属分组不存在。');
     const key = signature(mapped);
     if (seen.has(key)) { skipped++; continue; }
@@ -90,7 +95,7 @@ export function applyRuleSet(existing, imported, mode, existingGroups = []) {
   return {
     rules: [...base, ...added],
     groups,
-    ruleExecution: mode === 'replace' ? imported.ruleExecution : null,
+    ruleExecution: !forceReview && mode === 'replace' ? imported.ruleExecution : null,
     added: added.length,
     skipped,
   };

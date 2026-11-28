@@ -57,7 +57,13 @@ export function normalizeRuleGroups(groups = []) {
   });
 }
 
-export function effectiveRules(rules = [], groups = []) {
+export function effectiveRules(rules = [], groups = [], ungroupedEnabled = true) {
+  const groupIds = new Set(groups.map(group => group.id));
   const disabled = new Set(groups.filter(group => group.enabled === false).map(group => group.id));
-  return rules.filter(rule => rule.enabled !== false && !disabled.has(rule.groupId));
+  return rules.filter(rule => {
+    if (rule.enabled === false) return false;
+    const inGroup = Boolean(rule.groupId && groupIds.has(rule.groupId));
+    if (!inGroup) return ungroupedEnabled !== false;
+    return !disabled.has(rule.groupId);
+  });
 }

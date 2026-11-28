@@ -1,42 +1,41 @@
-import { escapeHTML as esc, inlineHTML, proposal, ready, processed, validateRule, normalizeScope, newId } from './engine.js';
-import { clone, chatKey, isDetectionCancelled } from './controller.js';
-import { createRuleDraft, simpleRule } from './rule-editor.js';
-import { renderRulesView, ruleCountText } from './rules-view.js';
-import { scanPrepared } from './scanner.js';
-import { renderRuleForm } from './rule-form.js';
-import { renderSettingsView, executionDescription } from './settings-view.js';
-import { stringifyRuleSet, parseRuleSet, applyRuleSet, MAX_RULE_SET_BYTES } from './rule-transfer.js';
-import { normalizeRuleGroups } from './rule-groups.js';
+// Main revision dialog shell, panel lifecycle, theming, and thin event routing.
+import { processed } from './engine.js';
+import { isDetectionCancelled } from './controller.js';
+import { ruleCountText, characterRuleCountText } from './rules-view.js';
+import { button, icon, dismissActions, createSubmodal, renderChangeLog } from './ui-primitives.js';
+import { createLauncher, syncLauncherTheme, syncLauncherBadge } from './ui-launcher.js';
+import { DRAFT_STORAGE_KEY, loadReviewDrafts, saveReviewDrafts, matchDraftForRound, storeEditDraft } from './ui-drafts.js';
+import {
+  renderReviewPanel, reviewSelectionState, renderReviewFooter, renderReviewRow,
+  refreshReviewRows, updateReviewSelection, refreshReviewEditor, finishReviewEdit,
+  handleReviewClick, handleReviewInput, handleReviewChange,
+} from './ui-review-panel.js';
+import {
+  activeRuleScope, ruleStore, renderRulesPanel, exportRules, exportRawRules, openRuleImport, importRules,
+  openRuleModal, closeRuleModal, openGroupModal, draftRule, previewRule,
+  handleRuleChoiceSummaryClick, handleRulesClick, handleRulesInput, handleRulesChange, handleRulesSubmit,
+} from './ui-rules-panel.js';
+import {
+  resetCharacterSession, characterRuleSummary, loadCharacterSnapshot, detectCharacter,
+  characterSelectionState, characterFooter, syncCharacterSectionCheckboxes, renderCharacterPanel,
+  refreshCharacterRows, updateCharacterSelection, openSourceModal, closeSourceModal, saveSourceModal,
+  returnToCharacterSetup, refreshCharacterEditor, finishCharacterEdit, applyCharacterChanges,
+  handleCharacterClick, handleCharacterInput, handleCharacterChange,
+} from './ui-character-panel.js';
+import {
+  renderSlider, renderSettingsPanel, renderScopeModal, saveScope, renderHistoryPanel,
+  handleSettingsHistoryClick, handleSettingsHistoryInput, handleSettingsHistoryChange,
+} from './ui-settings-history.js';
 
-const button = (text, attrs = '') => `<button type="button" ${attrs}>${text}</button>`;
-const glyph = name => `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${name === 'xmark' ? '<path d="m6 6 12 12M6 18 18 6"/>' : name === 'chevron-down' ? '<path d="m6 9 6 6 6-6"/>' : name === 'more' ? '<circle cx="5" cy="12" r="1" fill="currentColor"/><circle cx="12" cy="12" r="1" fill="currentColor"/><circle cx="19" cy="12" r="1" fill="currentColor"/>' : '<path d="m15 5 4 4M4 20l4-1L20 7a2.8 2.8 0 0 0-4-4L4 15z"/>'}</svg>`;
-const icon = (name, label, attrs) => button(glyph(name), `aria-label="${label}" class="tr-icon" ${attrs}`);
-const dismissActions = new Set(['close', 'cancel-rule', 'cancel-import', 'cancel-scope', 'cancel-group']);
-
-export function renderChangeLog(log = []) {
-  const deleted = [], replaced = [];
-  for (const entry of log) {
-    // Log storage and undo retain full originals; only the display is shortened.
-    const before = Array.from(entry.before ?? ''), after = Array.from(entry.after ?? '');
-    let start = 0, endBefore = before.length, endAfter = after.length;
-    while (start < endBefore && start < endAfter && before[start] === after[start]) start++;
-    while (endBefore > start && endAfter > start && before[endBefore - 1] === after[endAfter - 1]) { endBefore--; endAfter--; }
-    const oldText = before.slice(start, endBefore).join(''), newText = after.slice(start, endAfter).join('');
-    if (!oldText && !newText) continue;
-    if (!newText) deleted.push(`<div><p class="tr-sentence"><del>${esc(oldText)}</del></p></div>`);
-    else replaced.push(`<div><p class="tr-sentence">${oldText ? `<del>${esc(oldText)}</del> → ` : ''}<ins>${esc(newText)}</ins></p></div>`);
-  }
-  if (!deleted.length && !replaced.length) return '';
-  return `<details class="tr-change-log tr-change-log-root"><summary>修改日志 · ${deleted.length + replaced.length} 处</summary><div class="tr-change-log-groups">${[['删除', deleted], ['替换', replaced]].map(([label, rows]) => `<details class="tr-change-log"><summary>${label} · ${rows.length} 处</summary>${rows.join('') || '<p class="tr-meta">暂无记录</p>'}</details>`).join('')}</div></details>`;
-}
+export { renderChangeLog };
 
 export class RevisionUI {
   constructor(controller) {
     this.c = controller;
     this.screen = 'review';
     this.edit = null;
+    this.draftStorageKey = DRAFT_STORAGE_KEY;
     this.drafts = new Map();
-    this.draftStorageKey = 'henge-review-drafts-v1';
     this.loadDrafts();
     this.ruleId = null;
     this.ruleFilters = { search: '' };
@@ -55,25 +54,43 @@ export class RevisionUI {
     this.panelRoundId = null;
     this.panelEpoch = 0;
     this.detecting = false;
+    this.characterSnapshot = null;
+    this.characterSelection = null;
+    this.characterLoading = false;
+    this.characterError = '';
+    this.characterScan = null;
+    this.characterDetecting = false;
+    this.characterDetection = null;
+    this.characterEdit = null;
+    this.characterSelectionMap = null;
+    this.collapsedCharacterSections = new Set();
+    this.characterEpoch = 0;
+    this.characterBusy = false;
+    this.collapsedCharacterRuleGroups = new Set(['__body__']);
+    this.expandedBodyMirrorGroups = new Set();
+    this.characterRuleFilters = { search: '' };
+    this.ruleScope = 'body';
+    this.sourceDraft = null;
     this.onMainClosed = () => {};
     this.onPluginAvailabilityChange = () => {};
+
     this.dialog = document.createElement('dialog');
     this.dialog.id = 'tr-root';
     this.dialog.setAttribute('aria-label', '词句修订');
     this.dialog.innerHTML = '<div class="tr-shell"><header class="tr-head"></header><main class="tr-main"></main><div class="tr-status" role="status" aria-live="polite"></div><footer class="tr-foot"></footer></div>';
     document.body.append(this.dialog);
-    // Rule editing lives in its own nested modal instead of stretching the list.
-    this.ruleModal = document.createElement('dialog');
-    this.ruleModal.id = 'tr-rule-modal';
-    this.ruleModal.className = 'tr-submodal';
-    this.ruleModal.innerHTML = `<div class="tr-modal-shell"><header class="tr-modal-head"><h3>规则</h3>${icon('xmark', '关闭规则编辑', 'data-action="cancel-rule"')}</header><div class="tr-modal-body"></div></div>`;
-    this.dialog.append(this.ruleModal);
-    this.ruleModal.addEventListener('close', () => {
-      this.ruleModal.querySelector('.tr-modal-body').innerHTML = '';
-      if (this.ruleId !== null) { this.ruleDrafts.delete(this.ruleId); this.ruleId = null; }
-      this.ruleOriginal = null;
+
+    const onEvent = {
+      click: e => this.run(() => this.click(e)),
+      input: e => this.input(e),
+      change: e => this.run(() => this.change(e)),
+      submit: e => this.run(() => this.submit(e)),
+    };
+    this.ruleModal = createSubmodal(this.dialog, {
+      id: 'tr-rule-modal', title: '规则', closeLabel: '关闭规则编辑', closeAction: 'cancel-rule', onEvent,
+      onClose: () => { if (this.ruleId !== null) { this.ruleDrafts.delete(this.ruleId); this.ruleId = null; } this.ruleOriginal = null; },
+      onCancel: e => { e.preventDefault(); this.run(() => this.closeRuleModal()); },
     });
-    this.ruleModal.addEventListener('cancel', e => { e.preventDefault(); this.run(() => this.closeRuleModal()); });
     this.ruleModal.addEventListener('keydown', e => {
       if (e.key !== 'Escape') return;
       const openChoice = this.ruleModal.querySelector('.tr-rule-choice[open]');
@@ -82,54 +99,28 @@ export class RevisionUI {
       openChoice.open = false;
       openChoice.querySelector('summary')?.focus({ preventScroll: true });
     });
-    this.groupModal = document.createElement('dialog');
-    this.groupModal.id = 'tr-group-modal';
-    this.groupModal.className = 'tr-submodal';
-    this.groupModal.innerHTML = `<div class="tr-modal-shell"><header class="tr-modal-head"><h3>分组</h3>${icon('xmark', '关闭分组编辑', 'data-action="cancel-group"')}</header><div class="tr-modal-body"></div></div>`;
-    this.dialog.append(this.groupModal);
-    this.groupModal.addEventListener('close', () => { this.groupId = null; this.groupModal.querySelector('.tr-modal-body').innerHTML = ''; });
-    this.groupModal.addEventListener('cancel', e => { e.preventDefault(); this.groupModal.close(); });
-    this.importModal = document.createElement('dialog');
-    this.importModal.id = 'tr-import-modal';
-    this.importModal.className = 'tr-submodal';
-    this.importModal.innerHTML = `<div class="tr-modal-shell"><header class="tr-modal-head"><h3>导入规则集</h3>${icon('xmark', '关闭导入规则集', 'data-action="cancel-import"')}</header><div class="tr-modal-body"></div></div>`;
-    this.dialog.append(this.importModal);
-    this.importModal.addEventListener('close', () => {
-      this.importModal.querySelector('.tr-modal-body').innerHTML = '';
-      this.ruleImport = null;
+    this.groupModal = createSubmodal(this.dialog, {
+      id: 'tr-group-modal', title: '分组', closeLabel: '关闭分组编辑', closeAction: 'cancel-group', onEvent,
+      onClose: () => { this.groupId = null; },
+      onCancel: e => { e.preventDefault(); this.groupModal.close(); },
     });
-    this.scopeModal = document.createElement('dialog');
-    this.scopeModal.id = 'tr-scope-modal';
-    this.scopeModal.className = 'tr-submodal';
-    this.scopeModal.innerHTML = `<div class="tr-modal-shell"><header class="tr-modal-head"><h3>检测范围</h3>${icon('xmark', '关闭检测范围设置', 'data-action="cancel-scope"')}</header><div class="tr-modal-body"></div></div>`;
-    this.dialog.append(this.scopeModal);
-    this.scopeModal.addEventListener('close', () => {
-      this.scopeModal.querySelector('.tr-modal-body').innerHTML = '';
-      this.scopeDraft = null;
-      this.scopeMode = null;
+    this.importModal = createSubmodal(this.dialog, {
+      id: 'tr-import-modal', title: '导入规则集', closeLabel: '关闭导入规则集', closeAction: 'cancel-import', onEvent,
+      onClose: () => { this.ruleImport = null; },
     });
-    this.scopeModal.addEventListener('cancel', e => { e.preventDefault(); this.scopeModal.close(); });
-    // Keep subdialog controls scoped to their own event handler.
-    for (const modal of [this.ruleModal, this.groupModal, this.importModal, this.scopeModal]) {
-      modal.addEventListener('click', e => { e.stopPropagation(); this.run(() => this.click(e)); });
-      modal.addEventListener('input', e => { e.stopPropagation(); this.input(e); });
-      modal.addEventListener('change', e => { e.stopPropagation(); this.run(() => this.change(e)); });
-      modal.addEventListener('submit', e => { e.preventDefault(); e.stopPropagation(); this.run(() => this.submit(e)); });
-    }
-    this.launcher = document.createElement('button');
-    this.launcher.id = 'tr-launcher';
-    this.launcher.type = 'button';
-    this.launcher.setAttribute('aria-label', '打开词句修订');
-    this.launcher.innerHTML = `${glyph('pencil')}<small hidden></small>`;
-    this.launcher.title = '词句修订 · 拖动可移动';
-    this.launcher.addEventListener('click', e => {
-      // Touch activation is handled on release, including browsers that omit click after capture.
-      if (e.pointerType === 'touch') return;
-      if (this.suppressLauncherClick && e.detail !== 0) { this.suppressLauncherClick = false; return; }
-      this.run(() => this.open());
+    this.scopeModal = createSubmodal(this.dialog, {
+      id: 'tr-scope-modal', title: '检测范围', closeLabel: '关闭检测范围设置', closeAction: 'cancel-scope', onEvent,
+      onClose: () => { this.scopeDraft = null; this.scopeMode = null; },
+      onCancel: e => { e.preventDefault(); this.scopeModal.close(); },
     });
-    document.body.append(this.launcher);
-    this.attachLauncherDrag();
+    this.sourceModal = createSubmodal(this.dialog, {
+      id: 'tr-source-modal', title: '查看原文', closeLabel: '关闭原文编辑', closeAction: 'cancel-source', onEvent,
+      onClose: () => { this.sourceDraft = null; },
+      onCancel: e => { e.preventDefault(); this.run(() => this.closeSourceModal()); },
+    });
+
+    this.launcher = createLauncher({ onOpen: () => this.run(() => this.open()) });
+
     this.dialog.addEventListener('pointerdown', e => this.pointerDown(e));
     this.dialog.addEventListener('click', e => this.run(() => this.click(e)));
     this.dialog.addEventListener('input', e => this.input(e));
@@ -143,18 +134,22 @@ export class RevisionUI {
       this.returnFocus?.focus?.();
       this.onMainClosed();
     });
+
     this.c.onChange = event => {
       if (event?.type === 'busy') { this.updateBusyControls(); return; }
       if (event?.type === 'record-save-failed') {
         this.say('检测记录尚未可靠保存，可重试。', true);
-        if (this.dialog.open && this.screen === 'review' && !this.dialog.querySelector('[data-action="retry-record-save"]')) this.dialog.querySelector('.tr-main')?.insertAdjacentHTML('afterbegin', `<div class="tr-save-pending">检测记录尚未可靠保存。${button('重试保存记录', 'data-action="retry-record-save"')}</div>`);
+        if (this.dialog.open && this.screen === 'review' && !this.dialog.querySelector('[data-action="retry-record-save"]')) {
+          this.dialog.querySelector('.tr-main')?.insertAdjacentHTML('afterbegin', `<div class="tr-save-pending">检测记录尚未可靠保存。${button('重试保存记录', 'data-action="retry-record-save"')}</div>`);
+        }
         return;
       }
       this.badge();
       if (event?.type === 'detection' && this.panelRound()?.id !== event.round.id) return;
       if (this.edit && this.edit.roundId !== this.panelRound()?.id) this.edit = null;
-      if (this.dialog.open && !['extract', 'exclude'].includes(this.screen) && !(this.screen === 'rules' && this.ruleId !== null)) this.render();
+      if (this.dialog.open && !['extract', 'exclude'].includes(this.screen) && !(['rules', 'character-rules'].includes(this.screen) && this.ruleId !== null) && !(this.screen === 'character' && this.characterEdit)) this.render();
     };
+
     this.viewport = () => {
       const height = window.visualViewport?.height ?? window.innerHeight;
       const top = window.visualViewport?.offsetTop ?? 0;
@@ -169,56 +164,7 @@ export class RevisionUI {
     this.theme();
     this.badge();
   }
-  attachLauncherDrag() {
-    try { this.launcherPosition = JSON.parse(localStorage.getItem('text-revision-launcher-position')); } catch { /* Optional device-local preference. */ }
-    const place = (x, y) => {
-      const v = window.visualViewport, size = 36, pad = 8;
-      const left = v?.offsetLeft ?? 0, top = v?.offsetTop ?? 0;
-      x = Math.max(left + pad, Math.min(x, left + (v?.width ?? innerWidth) - size - pad));
-      y = Math.max(top + pad, Math.min(y, top + (v?.height ?? innerHeight) - size - pad));
-      Object.assign(this.launcher.style, { left: `${x}px`, top: `${y}px`, right: 'auto' });
-      return { x, y };
-    };
-    const restore = () => {
-      const p = this.launcherPosition;
-      if (p && Number.isFinite(p.x) && Number.isFinite(p.y)) place(p.x, p.y);
-      else place((window.visualViewport?.width ?? innerWidth) - 46, 88);
-    };
-    restore();
-    window.addEventListener('resize', restore);
-    window.visualViewport?.addEventListener('resize', restore);
-    window.visualViewport?.addEventListener('scroll', restore);
-    let drag = null;
-    this.launcher.addEventListener('pointerdown', e => {
-      if (!e.isPrimary || e.button !== 0) return;
-      const rect = this.launcher.getBoundingClientRect();
-      drag = { id: e.pointerId, startX: e.clientX, startY: e.clientY, x: rect.left, y: rect.top, moved: false };
-      this.suppressLauncherClick = false;
-      this.launcher.setPointerCapture(e.pointerId);
-    });
-    this.launcher.addEventListener('pointermove', e => {
-      if (!drag || drag.id !== e.pointerId) return;
-      const dx = e.clientX - drag.startX, dy = e.clientY - drag.startY;
-      drag.moved ||= Math.hypot(dx, dy) > 6;
-      if (!drag.moved) return;
-      this.launcher.classList.add('tr-dragging');
-      this.launcherPosition = place(drag.x + dx, drag.y + dy);
-    });
-    const finish = e => {
-      if (!drag || drag.id !== e.pointerId) return;
-      const touchTap = e.type === 'pointerup' && e.pointerType === 'touch' && !drag.moved;
-      this.suppressLauncherClick = drag.moved;
-      if (drag.moved) {
-        try { localStorage.setItem('text-revision-launcher-position', JSON.stringify(this.launcherPosition)); } catch { /* Dragging works without storage. */ }
-      }
-      drag = null;
-      this.launcher.classList.remove('tr-dragging');
-      if (touchTap) this.run(() => this.open());
-    };
-    this.launcher.addEventListener('pointerup', finish);
-    this.launcher.addEventListener('pointercancel', finish);
-    this.launcher.addEventListener('lostpointercapture', finish);
-  }
+
   async run(action) { try { await action(); } catch (error) { if (!isDetectionCancelled(error)) this.say(error.message, true); } }
   say(text, error = false) {
     const el = this.dialog.querySelector('.tr-status');
@@ -227,44 +173,18 @@ export class RevisionUI {
     if (error && !this.dialog.open) globalThis.toastr?.warning(text, '词句修订');
   }
   badge() {
-    this.launcher.hidden = this.c.settings().enabled === false || !this.c.settings().showLauncher;
     const round = this.c.current();
     const count = round && !round.reviewed && this.c.editable(round) ? round.count - processed(round) : 0;
-    const badge = this.launcher.querySelector('small');
-    badge.hidden = !count;
-    badge.textContent = String(count);
-    this.launcher.setAttribute('aria-label', `打开词句修订${count ? `，${count} 处待处理` : ''}`);
+    syncLauncherBadge(this.launcher, this.c.settings(), count);
   }
+  launcherTheme() { syncLauncherTheme(this.launcher, this.dialog, this.c.settings()); }
   isMainOpen() { return Boolean(this.dialog.open); }
-  loadDrafts() {
-    try {
-      for (const item of JSON.parse(sessionStorage.getItem(this.draftStorageKey) || '[]')) {
-        if (item?.key && typeof item.text === 'string') this.drafts.set(item.key, item);
-      }
-    } catch { /* Private browsing may disable session storage. */ }
-  }
-  saveDrafts() {
-    try {
-      const items = [...this.drafts.values()].map(({ key, roundId, groupId, text, expanded, chatKey, messageUid, swipeId, expected, rulesKey, values }) => ({ key, roundId, groupId, text, expanded, chatKey, messageUid, swipeId, expected, rulesKey, values }));
-      sessionStorage.setItem(this.draftStorageKey, JSON.stringify(items));
-    } catch { this.say('浏览器无法保存草稿；关闭或刷新前请复制输入内容。', true); }
-  }
-  draftFor(round, groupId) {
-    const key = `${round.id}:${groupId}`, saved = this.drafts.get(key);
-    if (!saved || !round.groups?.[groupId]) return null;
-    if (saved.chatKey !== round.chatKey || saved.messageUid !== round.messageUid || saved.swipeId !== round.swipeId || saved.expected !== round.expected || saved.rulesKey !== round.rulesKey) return null;
-    const matches = clone(round.groups[groupId].matches);
-    for (const match of matches) if (Object.hasOwn(saved.values ?? {}, match.id)) match.value = saved.values[match.id];
-    return { ...saved, matches };
-  }
-  storeEdit() {
-    if (!this.edit) return;
-    const round = this.panelRound();
-    if (!round) return;
-    Object.assign(this.edit, { chatKey: round.chatKey, messageUid: round.messageUid, swipeId: round.swipeId, expected: round.expected, rulesKey: round.rulesKey, values: Object.fromEntries(this.edit.matches.map(match => [match.id, match.value])) });
-    this.drafts.set(this.edit.key, this.edit);
-    this.saveDrafts();
-  }
+
+  loadDrafts() { this.drafts = loadReviewDrafts(this.draftStorageKey); }
+  saveDrafts() { saveReviewDrafts(this.drafts, this.draftStorageKey, msg => this.say(msg, true)); }
+  draftFor(round, groupId) { return matchDraftForRound(this.drafts, round, groupId); }
+  storeEdit() { storeEditDraft(this.drafts, this.panelRound(), this.edit, this.draftStorageKey, msg => this.say(msg, true)); }
+
   panelRound() { return this.c.history().find(round => round.id === this.panelRoundId) ?? null; }
   targetFloor() {
     try { return this.panelTarget ? this.c.resolveTarget(this.panelTarget) : null; }
@@ -283,7 +203,10 @@ export class RevisionUI {
     this.detecting = false;
     this.edit = null;
     this.reviewSelection = null;
+    this.resetCharacterSession();
   }
+  resetChat() { this.endPanelSession(); this.say(''); this.expandedRoundId = null; this.c.selectedId = null; this.screen = 'review'; this.c.onChange(); }
+
   async detectPanelTarget() {
     this.c.assertIdle();
     if (this.edit || this.panelRound()?.groups.some(g => this.draftFor(this.panelRound(), g.id))) throw new Error('这句还有未完成的编辑，请先完成或取消编辑，再重新检测。');
@@ -297,10 +220,10 @@ export class RevisionUI {
     this.edit = null;
     this.render();
     try {
-      const round = await this.c.detect(messageId, { signal: detection.signal, onReady: ready => {
+      const round = await this.c.detect(messageId, { signal: detection.signal, onReady: readyRound => {
         if (epoch !== this.panelEpoch || !this.dialog.open || !this.c.sameTarget(target, this.panelTarget)) return;
-        this.panelTarget = this.targetForRound(ready);
-        this.panelRoundId = ready.id;
+        this.panelTarget = this.targetForRound(readyRound);
+        this.panelRoundId = readyRound.id;
         this.detecting = false;
       } });
       if (epoch !== this.panelEpoch || !this.dialog.open || !this.c.sameTarget(target, this.panelTarget)) return null;
@@ -359,32 +282,45 @@ export class RevisionUI {
     await this.open(undefined, { force: false, round });
     return true;
   }
-  resetChat() { this.endPanelSession(); this.say(''); this.expandedRoundId = null; this.c.selectedId = null; this.screen = 'review'; this.c.onChange(); }
+
   theme() {
     const s = this.c.settings();
     this.dialog.dataset.theme = s.theme;
     this.dialog.dataset.palette = s.palette;
-    const transparency = Math.max(0, Math.min(100, Number(s.transparency) || 0));
+    const transparency = Math.max(0, Math.min(100, Number(s.transparency ?? 30) || 0));
     this.dialog.style.setProperty('--tr-alpha', String(1 - transparency / 100));
     this.launcher.dataset.theme = s.theme;
-    const appearance = s.appearance;
-    if (appearance) { this.dialog.dataset.appearance = appearance; this.launcher.dataset.appearance = appearance; }
+    if (s.appearance) { this.dialog.dataset.appearance = s.appearance; this.launcher.dataset.appearance = s.appearance; }
     else { delete this.dialog.dataset.appearance; delete this.launcher.dataset.appearance; }
     this.launcherTheme();
   }
   render() {
     const scroll = this.dialog.querySelector('.tr-main').scrollTop;
+    const worldScroll = this.dialog.querySelector('.tr-world-list')?.scrollTop ?? 0;
     this.theme();
-    const title = { review: '词句修订', rules: '规则', settings: '设置', extract: '标签提取', exclude: '内容排除', history: '检测记录' }[this.screen];
-    const parent = ['extract', 'exclude'].includes(this.screen) ? ['settings', '设置'] : ['review', '修订'];
-    const nav = this.screen === 'review' ? button('规则', 'data-screen="rules"') + button('记录', 'data-screen="history"') + button('设置', 'data-screen="settings"') : button(`‹ ${parent[1]}`, `data-screen="${parent[0]}"`);
-    const count = this.screen === 'rules' ? `<span class="tr-head-count">${ruleCountText(this.c.settings().rules, this.c.settings().ruleGroups)}</span>` : '';
+    const s = this.c.settings();
+    const title = { review: '词句修订', character: '角色', 'character-rules': '角色规则', rules: '规则', settings: '设置', extract: '标签提取', exclude: '内容排除', history: '检测记录' }[this.screen];
+    const parent = ['extract', 'exclude'].includes(this.screen) ? ['settings', '设置'] : this.screen === 'character-rules' ? ['character', '角色'] : ['review', '修订'];
+    const showCharacter = s.characterRevisionEnabled !== false;
+    const inCharacterResult = this.screen === 'character' && (this.characterDetecting || this.characterScan);
+    const nav = this.screen === 'review'
+      ? (showCharacter ? button('角色', 'data-screen="character"') : '') + button('规则', 'data-screen="rules"') + button('记录', 'data-screen="history"') + button('设置', 'data-screen="settings"')
+      : inCharacterResult
+        ? button('‹ 角色', 'data-action="char-back-setup"')
+        : button(`‹ ${parent[1]}`, `data-screen="${parent[0]}"`);
+    const count = this.screen === 'rules'
+      ? `<span class="tr-head-count">${ruleCountText(s.rules, s.ruleGroups, s.ungroupedEnabled !== false)}</span>`
+      : this.screen === 'character-rules'
+        ? `<span class="tr-head-count">${characterRuleCountText(s)}</span>`
+        : '';
     this.dialog.querySelector('.tr-head').innerHTML = `<div class="tr-head-title"><h2>${title}</h2>${count}</div><nav>${nav}${icon('xmark', '关闭修订面板', 'data-action="close"')}</nav>`;
     this.dialog.querySelector('.tr-foot').innerHTML = '';
-    const draw = { review: 'review', rules: 'rulesView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
+    const draw = { review: 'review', character: 'characterView', 'character-rules': 'rulesView', rules: 'rulesView', settings: 'settingsView', extract: 'scopeView', exclude: 'scopeView', history: 'historyView' }[this.screen];
     this[draw]();
     this.updateBusyControls();
     this.dialog.querySelector('.tr-main').scrollTop = scroll;
+    const worldList = this.dialog.querySelector('.tr-world-list');
+    if (worldList) worldList.scrollTop = worldScroll;
     this.badge();
   }
   body(html) { this.dialog.querySelector('.tr-main').innerHTML = html; }
@@ -392,7 +328,7 @@ export class RevisionUI {
     this.savingControls ??= new Map();
     for (const [el, disabled] of this.savingControls) { el.disabled = disabled; el.removeAttribute('data-tr-saving'); }
     this.savingControls.clear();
-    if (!this.c.busy) return;
+    if (!this.c.busy && !this.characterBusy) return;
     this.dialog.querySelectorAll('button, input, select, textarea').forEach(el => {
       if (dismissActions.has(el.dataset.action) || el.dataset.screen) return;
       this.savingControls.set(el, el.disabled);
@@ -401,230 +337,55 @@ export class RevisionUI {
     });
   }
   legend() { return '<div class="tr-legend"><del>删除</del><ins>新增</ins><mark>待改</mark></div>'; }
-  review() {
-    this.reviewSelection = null;
-    if (this.c.settings().enabled === false) { this.body('<div class="tr-empty">插件已停用。可以在“设置”中重新启用。</div>'); return; }
-    const history = false;
-    if (!history && this.detecting) { const floor = this.targetFloor(); this.body(`<div class="tr-empty">正在检测${floor === null ? '所选楼层' : ` ${floor}#`}……</div>`); return; }
-    const r = this.panelRound();
-    if (!r) { this.body(`<div class="tr-empty">${this.panelTarget ? '尚未获得所选楼层的检测结果。' : '打开一条 AI 回复后开始检测。'}${button(this.panelTarget ? '重新检测' : '检测最新回复', `data-action="${this.panelTarget ? 'scan' : 'scan-latest'}"`)}</div>`); return; }
-    const editable = !history && this.c.editable(r);
-    const floor = this.c.locateRound(r);
-    const pending = this.c.pendingSave && this.c.pendingSave.chatKey === r.chatKey ? `<div class="tr-save-pending" role="alert"><span>${this.c.pendingSave.status === 'diverged' ? '服务器正文发生冲突，请在酒馆中核对。' : '保存结果尚未确认，当前修改暂不能继续应用。'}</span>${button('重新确认', 'data-action="confirm-save"')}<details><summary>复制本地修改</summary><textarea readonly rows="4">${esc(this.c.pendingSave.text)}</textarea></details></div>` : '';
-    const stale = [...(this.drafts?.values() ?? [])].filter(d => d.chatKey === r.chatKey && d.messageUid === r.messageUid && !this.draftFor(r, d.groupId));
-    const staleDrafts = stale.length ? `<details class="tr-stale-drafts"><summary>${stale.length} 份旧草稿需人工核对</summary>${stale.map(d => `<label>旧草稿<textarea readonly rows="3">${esc(d.text)}</textarea></label>`).join('')}</details>` : '';
-    const recordFailure = this.c.recordSaveError ? `<div class="tr-save-pending">检测记录尚未可靠保存。${button('重试保存记录', 'data-action="retry-record-save"')}</div>` : '';
-    this.body(`<div class="tr-review-bar"><span title="字段按可独立修订的句段计数">${r.count}处问题/${r.groups.length}字段${floor >= 0 ? `　${floor}#` : ''}</span>${this.legend()}${history ? '' : button('重新检测', 'data-action="scan"')}</div>${pending}${recordFailure}${staleDrafts}${!editable && !history ? `<p class="tr-meta">${floor < 0 ? '所选楼层已不存在或身份无法确认，请重新选择该楼层。' : '正文或检测范围已变化，请重新检测。'}</p>` : ''}<div class="tr-rows">${r.groups.map(g => this.row(g, editable)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`);
-    if (r.log?.length) this.dialog.querySelector('.tr-main').insertAdjacentHTML('beforeend', renderChangeLog(r.log));
-    if (!history) this.reviewFooter(r, editable);
-  }
-  selectionState(r) {
-    if (this.reviewSelection?.round !== r) {
-      this.reviewSelection = { round: r, rows: new Map(r.groups.filter(ready).map(g => [g.id, Boolean(g.selected)])) };
-    }
-    return this.reviewSelection.rows;
-  }
-  reviewFooter(r, editable) {
-    const rows = this.selectionState(r), n = [...rows.values()].filter(Boolean).length;
-    this.dialog.querySelector('.tr-foot').innerHTML = `<label class="tr-check"><input type="checkbox" data-all ${rows.size && rows.size === n ? 'checked' : ''} ${!editable || !rows.size ? 'disabled' : ''}>全选</label><div>${editable && !r.reviewed && !this.edit ? button('完成审阅', 'data-action="finish-review"') : ''}${r.undo && editable ? button('撤销', 'data-action="undo"') : ''}${button(`应用所选 ${n}`, `class="tr-primary" data-action="apply" ${!editable || !n || this.edit || this.c.busy ? 'disabled' : ''}`)}</div>`;
-  }
-  row(g, editable) {
-    const editing = this.edit?.groupId === g.id && this.edit.roundId === this.panelRound()?.id && editable;
-    const selected = g.selected && ready(g);
-    const preview = editing ? inlineHTML({ ...g, kept: false, manual: true, draft: this.edit.text }) : inlineHTML(g);
-    const state = !editing && (g.kept || g.matches.every(m => m.done) && !ready(g)) ? (g.kept ? '已保留' : '已应用') : '';
-    const content = editable && ready(g) && !editing
-      ? button(`<span class="tr-sentence">${preview}</span>`, `class="tr-row-toggle" data-toggle="${g.id}" aria-pressed="${selected}" aria-label="${selected ? '取消选择' : '选择'}第${g.id + 1}字段：${esc(proposal(g))}"`)
-      : `<div class="tr-row-text ${editing ? 'tr-edit-preview' : ''}" ${editing ? `data-edit-preview="${g.id}"` : ''}><p class="tr-sentence">${preview}</p></div>`;
-    let editor = '';
-    if (editing) {
-      const d = this.edit;
-      editor = `<div class="tr-inline-editor"><label class="tr-edit-field"><span class="tr-label">修改后</span><textarea id="tr-edit" aria-label="编辑整句" rows="3">${esc(d.text)}</textarea></label><details class="tr-candidates" ${d.expanded ? 'open' : ''}><summary>替换候选</summary>${d.matches.filter(m => m.options.length || m.remove).map(m => `<div class="tr-candidate"><label for="tr-option-${m.id}">${esc(m.old)}</label><div class="tr-replace">${m.options.length ? `<select id="tr-option-${m.id}" data-option="${m.id}"><option value="" disabled ${m.value === null || m.value === '' ? 'selected' : ''}>替换为…</option>${m.options.map((v, i) => `<option value="${i}" ${m.value === v ? 'selected' : ''}>${esc(v)}</option>`).join('')}</select>${m.options.length > 1 ? button('换一个', `data-random="${m.id}"`) : ''}` : '<span class="tr-meta">未设置替换词</span>'}</div>${button('删除', `class="tr-delete" data-delete-match="${m.id}" aria-pressed="${m.value === ''}"`)}</div>`).join('') || '<p class="tr-meta">请直接编辑整句。</p>'}</details><div class="tr-edit-actions"><div>${button('不改这句', `data-keep="${g.id}"`)}${button('删除整句', 'class="tr-delete-sentence" data-action="delete-sentence"')}</div><div>${button('取消', 'data-action="cancel-edit"')}${button('完成', 'class="tr-primary" data-action="finish-edit"')}</div></div></div>`;
-    }
-    const actions = editable && !editing ? `<div class="tr-row-actions">${icon('pencil', `编辑第${g.id + 1}句`, `data-edit="${g.id}"`)}<button type="button" class="tr-icon tr-more" aria-label="展开第${g.id + 1}句快捷操作" aria-expanded="false" data-quick-toggle="${g.id}">${glyph('more')}</button><div class="tr-quick-menu" data-quick-menu="${g.id}" hidden><button type="button" data-quick="restore" data-quick-group="${g.id}">恢复</button><button type="button" class="tr-delete" data-quick="delete" data-quick-group="${g.id}">删除</button></div></div>` : '';
-    return `<section data-group="${g.id}" class="tr-row ${selected ? 'tr-selected' : ''} ${editable ? 'tr-row-editable' : ''} ${editing ? 'tr-row-editing' : ''} ${state === '已应用' ? 'tr-state-applied' : state === '已保留' ? 'tr-state-kept' : ''}">${content}${state ? `<span class="tr-sr-only">${state}</span>` : ''}${actions}${editor}</section>`;
-  }
-  refreshReviewRows(r, ids) {
-    const editable = this.c.editable(r), rows = this.selectionState(r);
-    for (const id of new Set(ids)) {
-      const g = r.groups[id];
-      if (!g) continue;
-      if (ready(g)) rows.set(g.id, Boolean(g.selected)); else rows.delete(g.id);
-      const row = this.dialog.querySelector(`.tr-rows > [data-group="${CSS.escape(String(id))}"]`);
-      if (row) row.outerHTML = this.row(g, editable);
-    }
-    this.reviewFooter(r, editable);
-  }
-  updateReviewSelection(r, changed = r.groups) {
-    const rows = this.selectionState(r);
-    for (const g of changed) {
-      const eligible = ready(g), selected = Boolean(g.selected && eligible);
-      if (eligible) rows.set(g.id, selected); else rows.delete(g.id);
-      const control = this.dialog.querySelector(`[data-toggle="${CSS.escape(String(g.id))}"]`);
-      if (!control) continue;
-      control.setAttribute('aria-pressed', String(selected));
-      control.setAttribute('aria-label', `${selected ? '取消选择' : '选择'}第${g.id + 1}字段：${proposal(g)}`);
-      control.closest('.tr-row')?.classList.toggle('tr-selected', selected);
-    }
-    const selected = [...rows.values()].filter(Boolean).length;
-    const all = this.dialog.querySelector('[data-all]');
-    if (all) all.checked = Boolean(rows.size && rows.size === selected);
-    const apply = this.dialog.querySelector('[data-action="apply"]');
-    if (apply) {
-      apply.textContent = `应用所选 ${selected}`;
-      apply.disabled = !selected || Boolean(this.edit) || this.c.busy;
-    }
-  }
-  rulesView() {
-    const settings = this.c.settings();
-    this.body(renderRulesView(settings.rules, this.ruleFilters, settings.ruleExecution, { active: this.ruleDeleteMode, selectedIds: this.ruleDeleteIds }, { ...settings, collapsedRuleGroups: this.collapsedRuleGroups }));
-    if (this.ruleDeleteMode) {
-      const count = this.ruleDeleteIds.size;
-      this.dialog.querySelector('.tr-foot').innerHTML = `<span class="tr-meta">${count ? `已选择 ${count} 条规则` : '请选择一条或多条规则'}</span><div>${button('取消', 'data-action="cancel-rule-delete"')}${button(`确定删除${count ? ` ${count}` : ''}`, `data-action="confirm-rule-delete" ${count ? '' : 'disabled'}`)}</div>`;
-    }
-  }
-  exportRules() {
-    const text = stringifyRuleSet(this.c.settings());
-    const url = URL.createObjectURL(new Blob([text], { type: 'application/json;charset=utf-8' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `词句修订-规则-${new Date().toISOString().slice(0, 10)}.json`;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-    this.say(`已导出 ${this.c.settings().rules.length} 条规则。文件不包含聊天、记录或其他设置。`);
-  }
-  exportRawRules() {
-    const data = { type: 'henge-legacy-rule-backup', exportedAt: new Date().toISOString(), rules: clone(this.c.settings().rules) };
-    const url = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], { type: 'application/json;charset=utf-8' }));
-    const link = document.createElement('a'); link.href = url; link.download = `词句修订-旧规则备份-${Date.now()}.json`;
-    document.body.append(link); link.click(); link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-    this.say('已发起旧规则原始备份下载；该备份仅用于保留资料，不能作为新版规则集导入。');
-  }
-  async openRuleImport(file) {
-    if (file.size > MAX_RULE_SET_BYTES) throw new Error('JSON 文件超过 25 MB，无法导入。');
-    const imported = parseRuleSet(await file.text());
-    this.ruleImport = imported;
-    const mode = imported.ruleExecution === 'auto' ? '自动应用' : '人工审查';
-    const examples = imported.rules.slice(0, 5).map(rule => `<li>${esc(rule.find)}</li>`).join('');
-    const migration = imported.priorityMigration.length > 1 ? `<div class="tr-save-pending">旧规则中的 ${imported.priorityMigration.join('、')} 等数字优先级会归为“高”，不同旧数字之间的顺序可能变化。受影响规则：${imported.priorityMigrationRules.slice(0, 5).map(rule => esc(rule.find)).join('、')}${imported.priorityMigrationRules.length > 5 ? `等 ${imported.priorityMigrationRules.length} 条` : ''}。导入后可逐条调整。</div>` : '';
-    this.importModal.querySelector('.tr-modal-body').innerHTML = `<p><strong>${esc(file.name)}</strong></p><p>共 ${imported.rules.length} 条规则、${imported.groups.length} 个分组 · 处理方式：${mode}</p>${migration}${examples ? `<ul class="tr-import-list">${examples}</ul>${imported.rules.length > 5 ? `<p class="tr-meta">另有 ${imported.rules.length - 5} 条规则未在这里展开。</p>` : ''}` : '<p class="tr-meta">这是一个空规则集。</p>'}<p class="tr-meta">追加：保留现有规则、分组开关和当前处理方式，同名分组会合并，跳过重复规则。<br>替换全部：清除现有规则和分组，并采用文件中的处理方式。</p><div class="tr-form-actions"><button type="button" data-action="cancel-import">取消</button><button type="button" data-action="import-append" ${imported.rules.length || imported.groups.length ? '' : 'disabled'}>追加</button><button type="button" class="tr-primary" data-action="import-replace">替换全部</button></div>`;
-    if (!this.importModal.open) this.importModal.showModal();
-  }
-  importRules(mode) {
-    if (!this.ruleImport) throw new Error('请重新选择要导入的 JSON 文件。');
-    const settings = this.c.settings();
-    const result = applyRuleSet(settings.rules, this.ruleImport, mode, settings.ruleGroups);
-    settings.rules = result.rules;
-    settings.ruleGroups = result.groups;
-    if (result.ruleExecution) settings.ruleExecution = result.ruleExecution;
-    this.c.saveSettings();
-    this.ruleId = null;
-    this.ruleDrafts.clear();
-    this.importModal.close();
-    this.render();
-    const skipped = result.skipped ? `，跳过 ${result.skipped} 条重复规则` : '';
-    this.say(`${mode === 'append' ? '已追加' : '已替换'} ${result.added} 条规则${skipped}。重新检测后生效。`);
-  }
-  openRuleModal(ruleId = 'new') {
-    this.ruleId = ruleId;
-    if (!this.ruleDrafts.has(ruleId)) this.ruleDrafts.set(ruleId, createRuleDraft(this.c.settings().rules.find(r => r.id === ruleId)));
-    const draft = this.ruleDrafts.get(ruleId);
-    this.ruleOriginal = JSON.stringify(draft);
-    this.ruleModal.querySelector('h3').textContent = ruleId === 'new' ? '新建规则' : '编辑规则';
-    this.ruleModal.querySelector('.tr-modal-body').innerHTML = renderRuleForm(draft, { canDelete: ruleId !== 'new', groups: this.c.settings().ruleGroups });
-    if (!this.ruleModal.open) this.ruleModal.showModal();
-    // Do not summon the phone keyboard just by opening an existing rule.
-    const focus = matchMedia('(pointer:coarse)').matches ? '[data-action="cancel-rule"]' : '#tr-find';
-    this.ruleModal.querySelector(focus)?.focus({ preventScroll: true });
-  }
-  closeRuleModal(force = false) {
-    const draft = this.ruleDrafts.get(this.ruleId);
-    const changed = draft && this.ruleOriginal !== null && JSON.stringify(draft) !== this.ruleOriginal;
-    if (!force && changed && !globalThis.confirm('这条规则还有未保存的修改，确定放弃吗？')) return;
-    this.ruleModal.close();
-  }
-  openGroupModal(groupId = null) {
-    this.groupId = groupId;
-    const group = this.c.settings().ruleGroups.find(item => item.id === groupId);
-    const execution = group?.execution ?? 'inherit';
-    this.groupModal.querySelector('h3').textContent = group ? '编辑分组' : '新建分组';
-    this.groupModal.querySelector('.tr-modal-body').innerHTML = `<form id="tr-group-form" class="tr-rule-editor"><label class="tr-field">分组名称<input id="tr-group-name" required maxlength="40" value="${esc(group?.name ?? '')}" autocomplete="off"></label><label class="tr-field">处理方式<span class="tr-setting-select"><select id="tr-group-execution"><option value="inherit" ${execution === 'inherit' ? 'selected' : ''}>跟随全局</option><option value="auto" ${execution === 'auto' ? 'selected' : ''}>自动应用</option><option value="review" ${execution === 'review' ? 'selected' : ''}>人工审查</option></select><svg class="tr-select-arrow" viewBox="0 0 12 12" aria-hidden="true" focusable="false"><path d="m2 4 4 4 4-4"/></svg></span></label><div class="tr-form-actions">${button('取消', 'data-action="cancel-group"')}<button type="submit" class="tr-primary">保存分组</button></div></form>`;
-    if (!this.groupModal.open) this.groupModal.showModal();
-    this.groupModal.querySelector('#tr-group-name')?.focus({ preventScroll: true });
-  }
-  draftRule() {
-    return simpleRule(this.ruleDrafts.get(this.ruleId), this.c.settings().rules.find(r => r.id === this.ruleId));
-  }
-  async previewRule() {
-    const draft = this.ruleDrafts.get(this.ruleId), sample = draft.sample ?? '';
-    if (!sample.trim()) throw new Error('请先填写测试文字。');
-    if (sample.length > 8000) throw new Error('测试文字最多 8000 字。');
-    const target = this.dialog.querySelector('#tr-rule-preview');
-    const inputSnapshot = JSON.stringify(draft), previewId = this.previewId = (this.previewId ?? 0) + 1;
-    target.textContent = '正在检测…';
-    try {
-      const rule = { ...this.draftRule(), enabled: true };
-      const round = await scanPrepared(sample, [rule], { context: this.c.context() });
-      if (!target.isConnected || !this.ruleModal.open || this.previewId !== previewId || JSON.stringify(draft) !== inputSnapshot) return;
-      target.innerHTML = round.groups.map(g => `<p class="tr-sentence">${inlineHTML(g)}</p><p class="tr-meta">${g.matches.map(m => Object.entries(m.captures).map(([key, value]) => `${esc(key)} = ${esc(value)}`).join('；')).filter(Boolean).join('<br>')}</p>`).join('') || '<p class="tr-meta">没有命中这条规则。</p>';
-    } catch (error) { if (target.isConnected && this.ruleModal.open && this.previewId === previewId && JSON.stringify(draft) === inputSnapshot) target.textContent = error.message; }
-  }
-  slider(id, label, value, max = 100) {
-    const normalized = Math.max(0, Math.min(max, Number(value) || 0));
-    return `<div class="tr-setting tr-setting-range"><label for="${id}">${label}</label><div class="tr-setting-control tr-mini-slider"><output id="${id}-value" for="${id}">${normalized}%</output><input type="range" id="${id}" min="0" max="${max}" step="5" value="${normalized}" style="--tr-range-fill:${normalized / max * 100}%"></div></div>`;
-  }
-  settingsView() {
-    this.body(renderSettingsView(this.c.settings(), {
-      legend: () => this.legend(), slider: (...args) => this.slider(...args), glyph,
-    }));
-    this.launcherTheme();
-  }
-  launcherTheme() {
-    const s = this.c.settings();
-    for (const el of [this.launcher, this.dialog.querySelector('[data-launcher-preview]')].filter(Boolean)) {
-      el.dataset.launcherColor = s.launcherColor;
-      el.style.opacity = String(1 - s.launcherTransparency / 100);
-    }
-  }
-  scopeView() {
-    const d = this.scopeDraft;
-    const extraction = this.scopeMode === 'extract';
-    const toggle = `<label class="tr-check tr-scope-toggle">${extraction ? '标签提取' : '内容排除'}<input role="switch" type="checkbox" data-scope-toggle="${extraction ? 'extractEnabled' : 'excludeEnabled'}" ${d[extraction ? 'extractEnabled' : 'excludeEnabled'] ? 'checked' : ''}></label>`;
-    let content;
-    if (extraction) {
-      content = `${toggle}<label class="tr-field">输入标签（逗号分隔）<textarea id="tr-extract-tags" rows="2" placeholder="content, maintext">${esc(d.extractTags)}</textarea></label><p class="tr-meta">只检测标签内的文字；关闭或留空则检测排除内容之外的全文。</p>`;
-    } else {
-      content = `${toggle}<p class="tr-meta">跳过开始到结束之间的内容，包含两端文字。标签提取留空或关闭时，会检测排除后剩余的文字。</p><div class="tr-exclusion-list">${d.excludeRules.map((pair, i) => `<div class="tr-exclusion-row"><input data-boundary="start" data-pair="${i}" aria-label="排除 ${i + 1}：开始文字" placeholder="开始文字" maxlength="256" value="${esc(pair.start)}"><span>到</span><input data-boundary="end" data-pair="${i}" aria-label="排除 ${i + 1}：结束文字" placeholder="结束文字" maxlength="256" value="${esc(pair.end)}">${icon('xmark', `删除排除 ${i + 1}`, `data-remove-pair="${i}"`)}</div>`).join('')}</div>${button('＋ 添加规则', 'class="tr-add-pair" data-action="add-pair"')}`;
-    }
-    this.scopeModal.querySelector('h3').textContent = extraction ? '标签提取' : '内容排除';
-    this.scopeModal.querySelector('.tr-modal-body').innerHTML = `${content}<div class="tr-form-actions"><button type="button" data-action="cancel-scope">取消</button><button type="button" class="tr-primary" data-action="save-scope">保存</button></div>`;
-  }
-  saveScope() {
-    const d = this.scopeDraft;
-    // Validate even disabled drafts, but retain names while their switch is off.
-    const checked = normalizeScope({ ...d, extractEnabled: true, excludeEnabled: true });
-    Object.assign(this.c.settings(), { extractTags: checked.extractTags, excludeRules: clone(d.excludeRules), extractEnabled: d.extractEnabled, excludeEnabled: d.excludeEnabled });
-    this.c.saveSettings(); this.edit = null;
-    this.scopeModal.close(); this.render(); this.say('已保存，重新检测后生效。');
-  }
-  historyView() {
-    const history = this.c.history();
-    const records = history.slice().reverse().map(r => {
-      const expanded = this.expandedRoundId === r.id;
-      const floor = this.c.locateRound(r);
-      const label = `${floor >= 0 ? floor : r.messageId ?? '?'}# ${r.version ?? 1}`;
-      const count = r.summary?.count ?? r.count, fields = r.summary?.fields ?? r.groups.length;
-      const detail = expanded ? `<div class="tr-record-detail"><p class="tr-meta">${new Date(r.time).toLocaleString()}${r.reviewed ? ' · 已完成审阅' : ''}${r.logOnly ? ' · 仅保留修改日志' : ''}${floor < 0 ? ' · 原消息已失效' : ''}</p>${r.logOnly ? '<p class="tr-meta">句段详情已按记录保留策略清理。</p>' : `<div class="tr-rows">${r.groups.map(g => this.row(g, false)).join('') || `<p class="tr-empty">${esc(r.notice || '未发现匹配的问题。')}</p>`}</div>`}${r.log?.length ? renderChangeLog(r.log) : '<p class="tr-meta">无修改日志</p>'}</div>` : '';
-      return `<section class="tr-record"><button type="button" class="tr-record-summary" data-round="${esc(r.id)}" aria-expanded="${expanded}" aria-label="${expanded ? '收起' : '展开'}${label} 检测记录"><span class="tr-record-number">${label}</span><span class="tr-record-reply">${floor >= 0 ? '回复版本' : '已失效'}</span><span class="tr-record-count">${count}处/${fields}字段</span><span class="tr-record-progress">${r.log?.length ?? 0} 条修改</span><span class="tr-record-chevron">${glyph('chevron-down')}</span></button>${detail}</section>`;
-    }).join('');
-    const floors = new Set(history.map(r => r.messageUid)).size;
-    const legacy = this.c.context().chatMetadata?.text_revision?.legacyBackup;
-    const backup = legacy?.length ? `<div class="tr-history-backup"><p class="tr-meta">旧记录仍保留在聊天中。请先导出备份，再清理旧副本以完成瘦身。</p>${button('导出旧记录备份', 'data-action="export-history-backup"')}${this.historyBackupExported === chatKey(this.c.context()) ? button('清理已备份的旧副本', 'data-action="clear-history-backup"') : ''}</div>` : '';
-    this.body(`<p class="tr-meta tr-history-meta">累计检测 ${this.c.context().chatMetadata?.text_revision?.total ?? 0} 次 · 保留 ${floors} 层／${history.length} 个内容版本</p>${backup}${records || '<p class="tr-empty">还没有检测记录。</p>'}`);
-  }
+
+  // Panel delegations (thin prototype facade for external callers & unit tests).
+  review() { renderReviewPanel(this); }
+  selectionState(r) { return reviewSelectionState(this, r); }
+  reviewFooter(r, editable) { renderReviewFooter(this, r, editable); }
+  row(g, editable, options) { return renderReviewRow(this, g, editable, options); }
+  refreshReviewRows(r, ids) { refreshReviewRows(this, r, ids); }
+  updateReviewSelection(r, changed) { updateReviewSelection(this, r, changed); }
+  refreshEditor() { refreshReviewEditor(this); }
+  finishEdit(text) { return finishReviewEdit(this, text); }
+
+  resetCharacterSession() { resetCharacterSession(this); }
+  characterRuleSummary() { return characterRuleSummary(this); }
+  loadCharacterSnapshot() { return loadCharacterSnapshot(this); }
+  detectCharacter() { return detectCharacter(this); }
+  characterSelectionState(scan) { return characterSelectionState(this, scan); }
+  characterFooter(scan) { characterFooter(this, scan); }
+  syncCharacterSectionCheckboxes(scan) { syncCharacterSectionCheckboxes(this, scan); }
+  characterView() { renderCharacterPanel(this); }
+  refreshCharacterRows(ids) { refreshCharacterRows(this, ids); }
+  updateCharacterSelection(changed) { updateCharacterSelection(this, changed); }
+  openSourceModal(targetId) { openSourceModal(this, targetId); }
+  closeSourceModal(force) { closeSourceModal(this, force); }
+  saveSourceModal() { return saveSourceModal(this); }
+  returnToCharacterSetup() { return returnToCharacterSetup(this); }
+  refreshCharacterEditor() { refreshCharacterEditor(this); }
+  finishCharacterEdit(text) { finishCharacterEdit(this, text); }
+  applyCharacterChanges(undo) { return applyCharacterChanges(this, undo); }
+
+  activeRuleScope() { return activeRuleScope(this); }
+  ruleStore(scope) { return ruleStore(this, scope); }
+  rulesView() { renderRulesPanel(this); }
+  exportRules() { exportRules(this); }
+  exportRawRules() { exportRawRules(this); }
+  openRuleImport(file) { return openRuleImport(this, file); }
+  importRules(mode) { importRules(this, mode); }
+  openRuleModal(ruleId) { openRuleModal(this, ruleId); }
+  closeRuleModal(force) { closeRuleModal(this, force); }
+  openGroupModal(groupId) { openGroupModal(this, groupId); }
+  draftRule() { return draftRule(this); }
+  previewRule() { return previewRule(this); }
+
+  slider(id, label, value, max) { return renderSlider(id, label, value, max); }
+  settingsView() { renderSettingsPanel(this); }
+  scopeView() { renderScopeModal(this); }
+  saveScope() { saveScope(this); }
+  historyView() { renderHistoryPanel(this); }
+
+  // Thin event dispatchers.
   pointerDown(e) {
     const b = e.target.closest?.('button');
     // Blurring an input can hide the keyboard and move a centered dialog
@@ -633,73 +394,19 @@ export class RevisionUI {
     if (e.button === 0 && (dismissActions.has(b?.dataset.action) || b?.dataset.action === 'clear-rule-search')) e.preventDefault();
   }
   async click(e) {
-    const choiceSummary = e.target.closest('.tr-rule-choice-summary');
-    if (choiceSummary?.classList?.contains('tr-rule-choice-summary')) {
-      e.preventDefault();
-      const selectedChoice = choiceSummary.parentElement;
-      const opening = !selectedChoice.open;
-      this.ruleModal.querySelectorAll('.tr-rule-choice[open]').forEach(choice => {
-        choice.open = false;
-      });
-      selectedChoice.classList.remove('tr-choice-up');
-      selectedChoice.open = opening;
-      if (opening) {
-        const boundary = selectedChoice.closest('.tr-modal-body').getBoundingClientRect();
-        const trigger = choiceSummary.getBoundingClientRect();
-        const below = boundary.bottom - trigger.bottom, above = trigger.top - boundary.top;
-        const menu = selectedChoice.querySelector('.tr-rule-choice-options');
-        const openUp = below + 8 < menu.getBoundingClientRect().height && above > below;
-        if (openUp) selectedChoice.classList.add('tr-choice-up');
-        selectedChoice.style.setProperty('--tr-choice-space', `${Math.max(44, Math.floor((openUp ? above : below) + 2))}px`);
-      }
-      return;
-    }
+    if (handleRuleChoiceSummaryClick(this, e)) return;
     const b = e.target.closest('button');
     if (!b || b.disabled || b.type === 'submit') return;
     const data = b.dataset;
-    if (data.ruleChoiceValue !== undefined) {
-      const choice = b.closest('[data-rule-choice]');
-      if (!choice || !this.ruleDrafts.has(this.ruleId)) return;
-      const field = choice.dataset.ruleChoice;
-      this.ruleDrafts.get(this.ruleId)[field] = field === 'priorityLevel' ? Number(data.ruleChoiceValue) : data.ruleChoiceValue;
-      choice.querySelectorAll('[data-rule-choice-value]').forEach(option => option.setAttribute('aria-pressed', String(option === b)));
-      const summary = choice.querySelector('summary');
-      summary.querySelector('.tr-rule-choice-current').textContent = b.textContent;
-      summary.setAttribute('aria-label', `${choice.parentElement.querySelector('.tr-rule-choice-label').textContent}：${b.textContent}`);
-      choice.open = false;
-      summary.focus({ preventScroll: true });
-      const preview = this.ruleModal.querySelector('#tr-rule-preview');
-      if (preview) preview.textContent = '';
-      return;
-    }
+
     if (data.action === 'close') { this.dialog.close(); return; }
-    if (data.action === 'cancel-rule' && this.ruleModal.open) { this.closeRuleModal(); return; }
-    if (data.action === 'cancel-group' && this.groupModal.open) { this.groupModal.close(); return; }
+    if (data.action === 'cancel-rule' && this.ruleModal?.open) { this.closeRuleModal(); return; }
+    if (data.action === 'cancel-group' && this.groupModal?.open) { this.groupModal.close(); return; }
     if (data.action === 'cancel-import') { this.importModal.close(); return; }
     if (data.action === 'cancel-scope') { this.scopeModal.close(); return; }
-    if (this.c.busy && !data.screen) return;
-    if (data.action === 'clear-rule-search') {
-      this.ruleFilters.search = ''; this.render();
-      this.dialog.querySelector('[data-rule-filter="search"]')?.focus({ preventScroll: true });
-      return;
-    }
-    if (data.groupCollapse !== undefined) {
-      if (this.collapsedRuleGroups.has(data.groupCollapse)) this.collapsedRuleGroups.delete(data.groupCollapse);
-      else this.collapsedRuleGroups.add(data.groupCollapse);
-      this.render();
-      this.dialog.querySelector(`[data-group-collapse="${CSS.escape(data.groupCollapse)}"]`)?.focus({ preventScroll: true });
-      return;
-    }
-    if (data.toggle !== undefined) {
-      const r = this.panelRound();
-      this.c.target(r);
-      if (!this.c.editable(r)) throw new Error('正文或检测范围已变化，请重新检测。');
-      const g = r.groups[Number(data.toggle)];
-      if (ready(g)) g.selected = !g.selected;
-      this.updateReviewSelection(r, [g]);
-      if (e.detail === 0) b.focus({ preventScroll: true });
-      return;
-    }
+    if (data.action === 'cancel-source' && this.sourceModal?.open) { this.closeSourceModal(); return; }
+    if ((this.c.busy || this.characterBusy) && !data.screen) return;
+
     if (data.quickToggle !== undefined) {
       const row = b.closest('.tr-row'), menu = row?.querySelector(`[data-quick-menu="${CSS.escape(String(data.quickToggle))}"]`);
       if (!menu) return;
@@ -712,274 +419,37 @@ export class RevisionUI {
       b.setAttribute('aria-expanded', String(!menu.hidden));
       return;
     }
-    if (data.quick !== undefined) {
-      const r = this.panelRound(), id = Number(data.quickGroup), g = r?.groups[id];
-      this.c.target(r); this.c.assertIdle();
-      if (!g || !this.c.editable(r)) throw new Error('正文或检测范围已变化，请重新检测。');
-      if (this.edit && this.edit.groupId !== id) throw new Error('请先完成或取消当前编辑。');
-      if (data.quick === 'restore') {
-        g.kept = true; g.manual = false; g.draft = null; g.selected = false;
-        g.matches.forEach(m => { m.done = true; });
-      } else if (data.quick === 'delete') {
-        g.kept = false; g.manual = true; g.draft = ''; g.selected = true;
-      }
-      this.edit = null;
-      this.refreshReviewRows(r, [id]); this.badge(); await this.c.persistDraft();
-      return;
-    }
     if (data.screen) {
+      const previousScreen = this.screen;
       this.scopeDraft = null;
-      if (data.screen !== 'rules') { this.ruleDeleteMode = false; this.ruleDeleteIds.clear(); }
-      this.screen = data.screen; this.say(''); this.render();
+      if (!['rules', 'character-rules'].includes(data.screen)) { this.ruleDeleteMode = false; this.ruleDeleteIds.clear(); }
+      this.screen = data.screen; this.say('');
+      if (data.screen === 'character' && (previousScreen !== 'character-rules' || !this.characterSnapshot)) await this.loadCharacterSnapshot();
+      else this.render();
       this.dialog.querySelector('.tr-main').scrollTop = 0;
       return;
     }
-    if (data.scope) {
-      const s = this.c.settings();
-      this.scopeDraft = { extractTags: s.extractTags.join(', '), extractEnabled: s.extractEnabled, excludeEnabled: s.excludeEnabled, excludeRules: clone(s.excludeRules) };
-      this.scopeMode = data.scope; this.say(''); this.scopeView();
-      if (!this.scopeModal.open) this.scopeModal.showModal();
-      this.scopeModal.querySelector('textarea, input')?.focus(); return;
-    }
-    if (data.removePair !== undefined) { this.scopeDraft.excludeRules.splice(Number(data.removePair), 1); this.scopeView(); return; }
-    if (data.theme) { this.c.settings().theme = data.theme; this.c.saveSettings(); this.render(); return; }
-    if (data.ruleDelete !== undefined) {
-      if (this.ruleDeleteIds.has(data.ruleDelete)) this.ruleDeleteIds.delete(data.ruleDelete);
-      else this.ruleDeleteIds.add(data.ruleDelete);
-      this.render(); return;
-    }
-    if (data.rule) { this.say(''); this.openRuleModal(data.rule); return; }
-    if (data.round) {
-      this.expandedRoundId = this.expandedRoundId === data.round ? null : data.round;
-      this.render();
-      this.dialog.querySelector(`[data-round="${CSS.escape(data.round)}"]`)?.focus({ preventScroll: true });
-      return;
-    }
-    if (data.edit !== undefined) {
-      const r = this.panelRound(); this.c.target(r); this.c.assertIdle();
-      const previousId = this.edit?.groupId;
-      const id = Number(data.edit), g = r.groups[id], key = `${r.id}:${id}`;
-      const protectedFloors = new Set([...this.drafts.values()].map(d => `${d.chatKey}:${d.messageUid}`));
-      if (!this.drafts.has(key) && !protectedFloors.has(`${r.chatKey}:${r.messageUid}`) && protectedFloors.size >= 10) throw new Error('已保护 10 个楼层的未完成草稿，请先完成或取消其中一个。');
-      this.edit = this.draftFor(r, id) ?? { roundId: r.id, groupId: id, key, text: proposal(g), matches: clone(g.matches), expanded: false };
-      this.storeEdit(); this.refreshReviewRows(r, [previousId, id]); this.dialog.querySelector('#tr-edit').focus(); return;
-    }
-    if (data.random !== undefined || data.deleteMatch !== undefined) {
-      const m = this.edit.matches.find(m => m.id === Number(data.random ?? data.deleteMatch));
-      if (data.deleteMatch !== undefined) m.value = m.value === '' ? null : '';
-      else { const values = m.options.filter(v => v !== m.value); m.value = values[Math.floor(Math.random() * values.length)]; }
-      this.refreshEditor(); return;
-    }
-    if (data.keep !== undefined) {
-      const r = this.panelRound(), g = r.groups[Number(data.keep)]; g.kept = true; g.selected = false; g.matches.forEach(m => { m.done = true; });
-      this.drafts.delete(this.edit?.key); this.saveDrafts(); this.edit = null; this.refreshReviewRows(r, [g.id]); this.badge(); await this.c.persistDraft(); return;
-    }
-    switch (data.action) {
-      case 'retry-record-save': await this.c.persistDraft(); this.render(); this.say('检测记录已重新提交保存。'); break;
-      case 'export-history-backup': {
-        const legacy = this.c.context().chatMetadata?.text_revision?.legacyBackup;
-        if (!legacy?.length) throw new Error('当前聊天没有待导出的旧记录。');
-        const blob = new Blob([JSON.stringify({ type: 'henge-history-backup', exportedAt: new Date().toISOString(), chat: this.c.context().chatId, rounds: legacy }, null, 2)], { type: 'application/json' });
-        const url = URL.createObjectURL(blob), link = document.createElement('a');
-        link.href = url; link.download = `词句修订-旧记录备份-${Date.now()}.json`;
-        document.body.append(link); link.click(); link.remove();
-        setTimeout(() => URL.revokeObjectURL(url), 60000);
-        this.historyBackupExported = chatKey(this.c.context()); this.render(); this.say('已发起本地备份下载。请确认文件已保存后，再清理旧副本。');
-        break;
-      }
-      case 'clear-history-backup': {
-        if (this.historyBackupExported !== chatKey(this.c.context())) throw new Error('请先导出当前聊天的旧记录备份。');
-        const metadata = this.c.context().chatMetadata.text_revision, backup = metadata.legacyBackup;
-        delete metadata.legacyBackup;
-        try { await this.c.persistDraft(); }
-        catch (error) { metadata.legacyBackup = backup; throw error; }
-        this.render(); this.say('旧副本已清理并保存。');
-        break;
-      }
-      case 'confirm-save': {
-        const result = await this.c.confirmPendingSave();
-        this.say(result === 'saved' ? '服务器已确认保存。' : '服务器仍是原文；本地建议已恢复，可重新应用。');
-        break;
-      }
-      case 'finish-review': await this.c.finishReview(this.panelRound()); this.say('本轮已完成，未应用的内容保留，不再提醒。'); break;
-      case 'new-group':
-        if (this.c.settings().ruleGroups.length >= 50) throw new Error('分组最多 50 个。');
-        this.openGroupModal(); break;
-      case 'edit-group': this.openGroupModal(data.groupId); break;
-      case 'delete-group': {
-        const settings = this.c.settings(), group = settings.ruleGroups.find(item => item.id === data.groupId);
-        if (!group || !globalThis.confirm(`删除分组“${group.name}”？组内规则会移到“未分组”。`)) break;
-        settings.rules = settings.rules.map(rule => rule.groupId === group.id ? { ...rule, groupId: null } : rule);
-        settings.ruleGroups = settings.ruleGroups.filter(item => item.id !== group.id);
-        this.collapsedRuleGroups.delete(group.id);
-        this.c.saveSettings(); this.render(); this.say('分组已删除，组内规则已移到“未分组”。重新检测后生效。'); break;
-      }
-      case 'dismiss-priority-notice': delete this.c.settings().priorityMigrationNotice; this.c.saveSettings(); this.render(); break;
-      case 'begin-rule-delete': this.ruleDeleteMode = true; this.ruleDeleteIds.clear(); this.say(''); this.render(); break;
-      case 'cancel-rule-delete': this.ruleDeleteMode = false; this.ruleDeleteIds.clear(); this.say(''); this.render(); break;
-      case 'confirm-rule-delete': {
-        if (!this.ruleDeleteIds.size) break;
-        const settings = this.c.settings(), count = this.ruleDeleteIds.size;
-        settings.rules = settings.rules.filter(rule => !this.ruleDeleteIds.has(rule.id));
-        this.ruleDeleteIds.forEach(id => this.ruleDrafts.delete(id));
-        this.ruleDeleteMode = false; this.ruleDeleteIds.clear();
-        this.c.saveSettings(); this.render(); this.say(`已删除 ${count} 条规则，重新检测后生效。`); break;
-      }
-      case 'export-rules': this.exportRules(); break;
-      case 'export-rules-raw': this.exportRawRules(); break;
-      case 'import-rules': this.dialog.querySelector('#tr-rule-import-file')?.click(); break;
-      case 'import-append': this.importRules('append'); break;
-      case 'import-replace': this.importRules('replace'); break;
-      case 'preview-rule': await this.previewRule(); break;
-      case 'add-pair':
-        if (this.scopeDraft.excludeRules.length >= 50) throw new Error('内容排除最多设置 50 条。');
-        this.scopeDraft.excludeRules.push({ start: '', end: '' }); this.scopeView();
-        this.scopeModal.querySelector('.tr-exclusion-row:last-child input').focus(); break;
-      case 'save-scope': this.saveScope(); break;
-      case 'scan-latest': {
-        const latest = this.c.latestReply();
-        if (latest < 0) throw new Error('当前没有可检测的 AI 回复。');
-        this.panelTarget = this.c.captureTarget(latest); this.panelRoundId = null; this.edit = null;
-        await this.detectPanelTarget(); break;
-      }
-      case 'scan': {
-        if (!this.panelTarget) throw new Error('本次面板没有可重新检测的楼层。');
-        this.edit = null; await this.detectPanelTarget(); break;
-      }
-      case 'new-rule': this.openRuleModal(); break;
-      case 'cancel-rule': {
-        if (this.ruleModal.open) this.closeRuleModal();
-        else { this.ruleDrafts.delete(this.ruleId); this.ruleId = null; this.render(); }
-        break;
-      }
-      case 'delete-current-rule': {
-        const rule = this.c.settings().rules.find(r => r.id === this.ruleId);
-        if (!rule || !globalThis.confirm('确定删除这条规则吗？此操作无法撤销。')) break;
-        this.c.settings().rules = this.c.settings().rules.filter(r => r.id !== rule.id);
-        this.c.saveSettings(); this.ruleDrafts.delete(rule.id); this.ruleId = null; this.ruleOriginal = null;
-        this.ruleModal.close(); this.render(); this.say('已删除此规则，重新检测后生效。');
-        break;
-      }
-      case 'cancel-edit': {
-        const id = this.edit.groupId;
-        this.drafts.delete(this.edit.key); this.saveDrafts(); this.edit = null;
-        this.refreshReviewRows(this.panelRound(), [id]); break;
-      }
-      case 'delete-sentence': await this.finishEdit(''); break;
-      case 'finish-edit': await this.finishEdit(); break;
-      case 'apply': this.say('正在应用并保存……'); await this.c.commit(this.panelRound()); this.say('已应用并确认保存，后续上下文将使用修改稿。'); break;
-      case 'undo': this.say('正在撤销并保存……'); await this.c.commit(this.panelRound(), { undo: true }); this.say('已撤销上次应用并确认保存。'); break;
-    }
+
+    if (await handleCharacterClick(this, data, b, e)) return;
+    if (await handleRulesClick(this, data, b)) return;
+    if (await handleSettingsHistoryClick(this, data)) return;
+    await handleReviewClick(this, data, b, e);
   }
   input(e) {
-    if (e.target.dataset.ruleFilter) {
-      const key = e.target.dataset.ruleFilter, position = e.target.selectionStart;
-      this.ruleFilters[key] = e.target.value; this.render();
-      const input = this.dialog.querySelector(`[data-rule-filter="${key}"]`); input?.focus();
-      if (key === 'search') input.setSelectionRange(position, position);
-      return;
-    }
-    if (e.target.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[e.target.dataset.ruleField] = e.target.type === 'checkbox' ? e.target.checked : e.target.value;
-    if (e.target.dataset.ruleField) { const preview = this.dialog.querySelector('#tr-rule-preview'); if (preview) preview.textContent = ''; }
-    if (e.target.id === 'tr-extract-tags') this.scopeDraft.extractTags = e.target.value;
-    if (e.target.dataset.boundary) this.scopeDraft.excludeRules[Number(e.target.dataset.pair)][e.target.dataset.boundary] = e.target.value;
-    if (e.target.id === 'tr-edit' && this.edit) {
-      this.edit.text = e.target.value;
-      this.storeEdit();
-      const g = this.panelRound().groups[this.edit.groupId];
-      const preview = this.dialog.querySelector(`[data-edit-preview="${g.id}"] .tr-sentence`);
-      if (preview) preview.innerHTML = inlineHTML({ ...g, kept: false, manual: true, draft: this.edit.text });
-    }
-    if (['tr-opacity', 'tr-launcher-opacity'].includes(e.target.id)) {
-      this.c.settings()[e.target.id === 'tr-opacity' ? 'transparency' : 'launcherTransparency'] = Number(e.target.value); this.theme();
-      e.target.style.setProperty('--tr-range-fill', `${Number(e.target.value) / Number(e.target.max || 100) * 100}%`);
-      this.dialog.querySelector(`#${e.target.id}-value`).textContent = `${e.target.value}%`;
-      this.c.saveSettings();
-    }
-  }
-  refreshEditor() {
-    const g = this.panelRound().groups[this.edit.groupId];
-    this.edit.text = proposal({ ...g, kept: false, matches: this.edit.matches, manual: false });
-    this.edit.expanded = true;
-    this.storeEdit();
-    this.refreshReviewRows(this.panelRound(), [g.id]);
-  }
-  async finishEdit(text = this.edit.text) {
-    const r = this.panelRound(); this.c.target(r);
-    const g = r.groups[this.edit.groupId]; g.matches = clone(this.edit.matches); g.manual = false; g.kept = false;
-    g.manual = text !== proposal(g); g.draft = text; g.selected = ready(g);
-    this.drafts.delete(this.edit.key); this.saveDrafts(); this.edit = null; this.refreshReviewRows(r, [g.id]); this.badge(); await this.c.persistDraft();
+    const el = e.target;
+    if (handleRulesInput(this, el)) return;
+    if (handleCharacterInput(this, el)) return;
+    if (handleSettingsHistoryInput(this, el)) return;
+    handleReviewInput(this, el);
   }
   async change(e) {
     const el = e.target;
-    if (el.id === 'tr-rule-import-file') {
-      const file = el.files?.[0];
-      el.value = '';
-      if (file) await this.openRuleImport(file);
-      return;
-    }
-    if (el.dataset.ruleField || el.dataset.ruleFilter) this.input(e);
-    if (el.dataset.ruleField) this.ruleDrafts.get(this.ruleId)[el.dataset.ruleField] = el.type === 'checkbox' ? el.checked : el.value;
-    if (el.id === 'tr-launcher-color') { this.c.settings().launcherColor = el.value; this.launcherTheme(); this.c.saveSettings(); }
-    if (el.dataset.scopeToggle) this.scopeDraft[el.dataset.scopeToggle] = el.checked;
-    if (el.id === 'tr-launcher-enabled') { this.c.settings().showLauncher = el.checked; this.badge(); this.c.saveSettings(); this.render(); }
-    if (el.id === 'tr-plugin-enabled') { this.c.settings().enabled = el.checked; this.c.detectionSequence++; if (!el.checked) this.autoDetection?.cancel(); this.badge(); this.onPluginAvailabilityChange(); this.c.saveSettings(); this.render(); }
-    if (el.id === 'tr-palette') { this.c.settings().palette = el.value; this.theme(); this.c.saveSettings(); }
-    if (el.id === 'tr-auto') { this.c.settings().autoScan = el.checked; if (!el.checked) this.autoDetection?.cancel(); this.c.saveSettings(); }
-    if (el.id === 'tr-history-detection') { this.c.settings().historyDetection = el.checked; this.onPluginAvailabilityChange(); this.c.saveSettings(); }
-    if (el.id === 'tr-rule-execution') {
-      this.c.settings().ruleExecution = el.value; this.c.saveSettings();
-      const help = this.dialog.querySelector('#tr-execution-help');
-      if (help) help.textContent = executionDescription(el.value);
-    }
-    if (el.dataset.ruleDeleteCheck !== undefined) {
-      if (el.checked) this.ruleDeleteIds.add(el.dataset.ruleDeleteCheck);
-      else this.ruleDeleteIds.delete(el.dataset.ruleDeleteCheck);
-      this.render();
-    }
-    if (el.dataset.ruleEnabled) {
-      this.c.settings().rules.find(r => r.id === el.dataset.ruleEnabled).enabled = el.checked;
-      this.c.saveSettings(); this.render();
-      this.dialog.querySelector(`[data-rule-enabled="${CSS.escape(el.dataset.ruleEnabled)}"]`)?.focus({ preventScroll: true });
-    }
-    if (el.dataset.groupEnabled !== undefined) {
-      const group = this.c.settings().ruleGroups.find(item => item.id === el.dataset.groupEnabled);
-      if (!group) throw new Error('分组已不存在，请重新打开规则页。');
-      group.enabled = el.checked;
-      this.c.saveSettings(); this.render();
-      this.dialog.querySelector(`[data-group-enabled="${CSS.escape(group.id)}"]`)?.focus({ preventScroll: true });
-    }
-    if (el.id === 'tr-appearance') { this.c.settings().appearance = el.value; this.theme(); this.c.saveSettings(); }
-    if (el.hasAttribute('data-all')) {
-      const r = this.panelRound();
-      r.groups.filter(ready).forEach(g => { g.selected = el.checked; });
-      this.updateReviewSelection(r);
-    }
-    if (el.dataset.option !== undefined) { const m = this.edit.matches.find(m => m.id === Number(el.dataset.option)); m.value = m.options[Number(el.value)]; this.refreshEditor(); }
+    if (await handleRulesChange(this, el)) return;
+    if (handleCharacterChange(this, el)) return;
+    if (handleSettingsHistoryChange(this, el)) return;
+    handleReviewChange(this, el);
   }
   submit(e) {
-    if (e.target.id === 'tr-group-form') {
-      const settings = this.c.settings(), name = this.groupModal.querySelector('#tr-group-name')?.value.trim();
-      const execution = this.groupModal.querySelector('#tr-group-execution')?.value ?? 'inherit';
-      const current = settings.ruleGroups.find(item => item.id === this.groupId);
-      const updated = current ? settings.ruleGroups.map(item => item.id === current.id ? { ...item, name, execution } : item)
-        : [...settings.ruleGroups, { id: newId(), name, enabled: true, execution }];
-      settings.ruleGroups = normalizeRuleGroups(updated);
-      this.c.saveSettings(); this.groupModal.close(); this.render(); this.say('分组已保存，重新检测后生效。');
-      return;
-    }
-    if (e.target.id !== 'tr-rule-form') return;
-    const old = this.c.settings().rules.find(r => r.id === this.ruleId);
-    const rule = this.draftRule();
-    if (rule.groupId && !this.c.settings().ruleGroups.some(group => group.id === rule.groupId)) throw new Error('所属分组已不存在，请重新选择。');
-    const rules = this.c.settings().rules;
-    const signature = r => { const { id, enabled, ...content } = validateRule(r); return JSON.stringify(content); };
-    if (rules.some(r => r.id !== rule.id && signature(r) === signature(rule))) throw new Error('已经有完全相同的规则。');
-    if (old) rules.splice(rules.indexOf(old), 1, rule);
-    else { if (rules.length >= 200) throw new Error('最多保存 200 条规则。'); rules.push(rule); }
-    const inModal = this.ruleModal.open;
-    this.c.saveSettings(); this.ruleDrafts.delete(this.ruleId); this.ruleId = null; this.ruleOriginal = null; this.screen = 'rules';
-    if (inModal) this.ruleModal.close();
-    this.render(); this.say('规则已保存，下次检测生效。');
+    handleRulesSubmit(this, e.target);
   }
 }
