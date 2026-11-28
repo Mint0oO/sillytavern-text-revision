@@ -1,21 +1,19 @@
-MIT License
+Copyright (c) 2026 Mint0oO. All Rights Reserved.
 
-Copyright (c) 2026 Mint0oO
+《词句修订》（sillytavern-text-revision）版权与使用条款
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+本软件及其文档、界面与全部源代码（以下简称“本插件”）版权归作者 Mint0oO 所有，保留所有权利。本插件并非开源软件，源码公开仅用于 SillyTavern 插件安装与透明核验。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+一、允许的使用
+1. 个人免费下载、安装与非商业使用本插件。
+2. 通过转发本仓库原始链接的方式向他人分享和推荐。
+3. 仅限个人在本地自行修改代码以供本人自用，且不得以任何形式向外传播修改后的版本。
+4. 用户自行编写并导出的规则集 JSON 文件归用户自行支配，不受本条款限制。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+二、禁止的行为（未经作者明确书面授权）
+1. 禁止商用：不得将本插件用于任何直接或间接的盈利或商业用途，包括但不限于售卖本插件、纳入付费整合包/付费懒人包、作为付费代装或付费课程/社群的附带品、以及任何形式的引流变现。
+2. 禁止二传：不得将本插件本体文件重新打包、搬运、网盘转存、镜像分发或通过第三方渠道二次分发。
+3. 禁止二改传播：不得对本插件进行修改、改编、拆解整合后公开发布、传播或以其他名义重新发行，亦不得移除或篡改原作者署名与本条款。
+
+三、免责声明
+本插件按“现状（AS IS）”免费提供，不附带任何明示或暗示的担保。因使用本插件导致的任何数据异常或损失，作者不承担赔偿责任；建议在重要操作前自行备份聊天与角色卡数据。
